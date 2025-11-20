@@ -10,7 +10,7 @@ uv run scripts/search.py StandUp Comedy --output-format json --max-results 50 --
 uv run scripts/download.py videos.json --output-path ./video_downloads --shuffle --download-count 50
 ```
 
-2.5. Or a one-liner
+3.Or a one-liner
 ```bash
 uv run scripts/download.py \
  <(uv run scripts/search.py \
@@ -23,7 +23,7 @@ uv run scripts/download.py \
  --download-count 50
 ```
 
-3. Run the transcode script to extract audio from downloaded videos
+4. Run the transcode script to extract audio from downloaded videos
 ```bash
 ./scripts/transcode.sh ./video_downloads ./audio_outputs
 ```
