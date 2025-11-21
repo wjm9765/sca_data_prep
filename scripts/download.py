@@ -9,10 +9,10 @@ from tqdm import tqdm
 from data_models import SearchResult
 
 
-def download_video(url: str, output_path: str = ".") -> None:
+def download_video(url: str, output_path: str = ".", only_audio=False) -> None:
     ydl_opts = {
         'outtmpl': f'{output_path}/%(title)s.%(ext)s',
-        'format': 'bestvideo+bestaudio/best',
+        'format': 'bestaudio/best' if only_audio else 'bestvideo+bestaudio/best',
         'merge_output_format': 'mkv',
         'quiet': True,
         'no_warnings': True,
@@ -21,9 +21,10 @@ def download_video(url: str, output_path: str = ".") -> None:
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([url])
 
-def download_videos_from_search(search_result: SearchResult, output_path: str = ".") -> None:
+def download_videos_from_search(search_result: SearchResult, output_path: str = ".", only_audio=False) -> None:
     for entry in tqdm(search_result.results, desc="Downloading videos"):
-        download_video(entry.url, output_path)
+        tqdm.write(f"Downloading: {entry.title} ({entry.url})")
+        download_video(entry.url, output_path, only_audio)
 
 
 if __name__ == "__main__":
@@ -32,6 +33,7 @@ if __name__ == "__main__":
     parser.add_argument("--download-count", type=int, default=None, help="Number of videos to download from the search results.")
     parser.add_argument("--shuffle", action="store_true", help="Shuffle the order of videos before downloading.")
     parser.add_argument("--output-path", type=str, default=".", help="Directory to save downloaded videos.")
+    parser.add_argument("--only-audio", action="store_true", help="Download only audio from the videos.")
     args = parser.parse_args()
 
     search_results_path = Path(args.search_results)
@@ -50,4 +52,4 @@ if __name__ == "__main__":
         if int(args.download_count) > len(search_result.results):
             warnings.warn(f"Requested download count {args.download_count} exceeds available results {len(search_result.results)}. Downloading all available results.")
         search_result.results = search_result.results[:args.download_count]
-    download_videos_from_search(search_result, output_path=str(output_path))
+    download_videos_from_search(search_result, output_path=str(output_path), only_audio=args.only_audio)

@@ -7,7 +7,7 @@ uv run scripts/search.py StandUp Comedy --output-format json --max-results 50 --
 
 2. Run the download script to download videos from the search results
 ```bash
-uv run scripts/download.py ./dataset/videos.json --output-path ./dataset/video_downloads --shuffle --download-count 50
+uv run scripts/download.py ./dataset/videos.json --output-path ./dataset/video_downloads --shuffle --download-count 50 --only-audio
 ```
 
 3.Or a one-liner
@@ -20,7 +20,8 @@ uv run scripts/download.py \
    --min-length 600) \
  --output-path ./dataset/video_downloads \
  --shuffle \
- --download-count 50
+ --download-count 50 \
+ --only-audio
 ```
 
 4. Run the transcode script to extract audio from downloaded videos
