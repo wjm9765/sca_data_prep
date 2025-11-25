@@ -34,3 +34,10 @@
 ```bash
 ./main.py dataset/audio_outputs --save-file ./dataset/inference_outputs.jsonl
 ```
+
+## Result files
+Inference results are available in the following location:
+
+[Full Dataset Files](https://web.aws.riverfog7.com/files/sca/dataset.tar.xz)
+
+[Inference Output Files Only](https://web.aws.riverfog7.com/files/sca/inference_outputs.jsonl)
