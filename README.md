@@ -28,3 +28,8 @@
 ```bash
 ./scripts/transcode.sh ./dataset/video_downloads ./dataset/audio_outputs webm wav
 ```
+
+5. Run the inference code to generate transcripts from audio files
+```bash
+./main.py dataset/audio_outputs --save-file ./dataset/inference_outputs.jsonl
+```
