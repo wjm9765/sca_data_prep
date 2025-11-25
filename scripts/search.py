@@ -1,3 +1,5 @@
+#!/usr/bin/env uv run
+
 import argparse
 import sys
 from pathlib import Path
