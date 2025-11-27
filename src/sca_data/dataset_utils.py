@@ -1,12 +1,16 @@
 import io
+import shutil
+import tarfile
+from hashlib import md5
 from pathlib import Path
-from typing import Iterable
-from typing import Tuple
+from typing import Tuple, Optional, Iterable
 
 import numpy as np
+import requests
 import soundfile as sf
 from datasets import DatasetDict, Dataset, load_from_disk
 from datasets import Features, Value, Audio
+from tqdm import tqdm
 
 from .models.events import ComedianEvent, BaseEvent, AudienceEvent, EnvironmentEvent, ComedySession
 
@@ -111,7 +115,44 @@ def to_hf_dataset(sessions: Iterable[ComedySession], audio_base_path: Path) -> D
     })
 
 
-def easy_load(dataset_path: Path) -> Dataset:
+def easy_load(dataset_path: Optional[Path] = None, cache_dir: Optional[Path] = Path('./dataset')) -> Dataset:
+    if dataset_path is None:
+        dataset_path = cache_dir / "sca_comedy_dataset"
+        dataset_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_tar_path = dataset_path.parent / "sca_comedy_dataset.tar"
+
+        if not dataset_path.exists():
+            url_url = "https://raw.githubusercontent.com/riverfog7/sca_data_prep/refs/heads/main/.hf_dataset_url"
+            hash_url = "https://raw.githubusercontent.com/riverfog7/sca_data_prep/refs/heads/main/.hf_dataset_md5"
+            dataset_url = requests.get(url_url).text.strip()
+            dataset_md5 = requests.get(hash_url).text.strip()
+
+            hash_func = md5()
+            dl_stream = requests.get(dataset_url, stream=True)
+            total_size = int(dl_stream.headers.get('content-length', 0))
+
+            with open(tmp_tar_path, "wb") as f, tqdm(
+                    desc="Downloading dataset",
+                    total=total_size,
+                    unit='B',
+                    unit_scale=True,
+                    unit_divisor=1024,
+            ) as bar:
+                for chunk in dl_stream.iter_content(chunk_size=8192):
+                    f.write(chunk)
+                    hash_func.update(chunk)
+                    bar.update(len(chunk))
+
+            if hash_func.hexdigest() != dataset_md5:
+                shutil.rmtree(dataset_path, ignore_errors=True)
+                tmp_tar_path.unlink(missing_ok=True)
+                raise ValueError("Downloaded dataset file is corrupted (MD5 mismatch)")
+
+            with tarfile.open(tmp_tar_path, "r") as tar:
+                tar.extractall(path=dataset_path.parent)
+
+            tmp_tar_path.unlink(missing_ok=True)
+
     dataset = load_from_disk(dataset_path)
     loader = RelationalAudioLoader(dataset["storage"])
     train_ds = dataset["train"]
