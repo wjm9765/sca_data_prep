@@ -3,7 +3,7 @@ requires = ["setuptools", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "data-prep"
+name = "sca_data"
 version = "0.1.0"
 description = "Data preparation utilities for the SCA project."
 readme = "README.md"
