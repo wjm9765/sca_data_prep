@@ -5,7 +5,7 @@ from typing import Tuple
 
 import numpy as np
 import soundfile as sf
-from datasets import DatasetDict, Dataset
+from datasets import DatasetDict, Dataset, load_from_disk
 from datasets import Features, Value, Audio
 
 from .models.events import ComedianEvent, BaseEvent, AudienceEvent, EnvironmentEvent, ComedySession
@@ -109,6 +109,14 @@ def to_hf_dataset(sessions: Iterable[ComedySession], audio_base_path: Path) -> D
         "storage": ds_audio,
         "train": ds_text,
     })
+
+
+def easy_load(dataset_path: Path) -> Dataset:
+    dataset = load_from_disk(dataset_path)
+    loader = RelationalAudioLoader(dataset["storage"])
+    train_ds = dataset["train"]
+    train_ds.set_transform(loader)
+    return train_ds
 
 
 class RelationalAudioLoader:
