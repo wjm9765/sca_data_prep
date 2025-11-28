@@ -3,7 +3,7 @@ import shutil
 import tarfile
 from hashlib import md5
 from pathlib import Path
-from typing import Tuple, Optional, Iterable
+from typing import Tuple, Optional, Iterable, Literal
 
 import numpy as np
 import requests
@@ -13,6 +13,7 @@ from datasets import Features, Value, Audio
 from tqdm import tqdm
 
 from .models.events import ComedianEvent, BaseEvent, AudienceEvent, EnvironmentEvent, ComedySession
+from .constants import DEFAULT_SYSTEM_PROMPT
 
 
 def remove_extras(session: ComedySession, remove_events: Tuple[BaseEvent] = (AudienceEvent, EnvironmentEvent)) -> ComedySession:
@@ -115,7 +116,46 @@ def to_hf_dataset(sessions: Iterable[ComedySession], audio_base_path: Path) -> D
     })
 
 
-def easy_load(dataset_path: Optional[Path] = None, cache_dir: Optional[Path] = Path('./dataset')) -> Dataset:
+def to_chat_format(row, system_prompt: Optional[str] = None) -> dict:
+    audio_data = row["audio"]["array"]
+    messages = [
+        {
+            "role": "system",
+            "content": system_prompt or DEFAULT_SYSTEM_PROMPT
+        },
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "audio",
+                    "audio_waveform": audio_data,
+                    "sampling_rate": 16000
+                },
+                {"type": "text", "text": "Transcribe the comedian's speech."}
+            ]
+        },
+        {
+            "role": "assistant",
+            "content": row["target_text"]
+        }
+    ]
+    return {"messages": messages}
+
+
+def to_chat_format_batch(batch: dict, system_prompt: Optional[str] = None) -> dict:
+    messages_list = []
+    for audio_entry, target_text in zip(batch["audio"], batch["target_text"]):
+        fake_row = {
+            "audio": audio_entry,
+            "target_text": target_text
+        }
+        result = to_chat_format(fake_row, system_prompt)
+        messages_list.append(result["messages"])
+
+    return {"messages": messages_list}
+
+
+def easy_load(dataset_path: Optional[Path] = None, cache_dir: Optional[Path] = Path('./dataset'), format: Literal["chat", "raw"] = "chat", system_prompt: Optional[str] = None) -> Dataset:
     if dataset_path is None:
         dataset_path = cache_dir / "sca_comedy_dataset"
         dataset_path.parent.mkdir(parents=True, exist_ok=True)
@@ -156,7 +196,13 @@ def easy_load(dataset_path: Optional[Path] = None, cache_dir: Optional[Path] = P
     dataset = load_from_disk(dataset_path)
     loader = RelationalAudioLoader(dataset["storage"])
     train_ds = dataset["train"]
-    train_ds.set_transform(loader)
+
+    if format == "chat":
+        train_ds.set_transform(lambda batch: to_chat_format_batch(loader(batch), system_prompt=system_prompt))
+    elif format == "raw":
+        train_ds.set_transform(loader)
+    else:
+        raise ValueError(f"Unsupported format: {format}")
     return train_ds
 
 
