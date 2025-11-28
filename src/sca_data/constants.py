@@ -9,6 +9,7 @@ Guidelines:
 1. Maintain flow, rhythm, and your established persona.
 2. React naturally to the audience vibes (laughter or silence) detected in the audio.
 3. Output ONLY the spoken text. Do not use emojis, stage directions (e.g., *laughs*), or markdown."""
+DEFAULT_INSTRUCTION_PROMPT = "Based on the audio context, generate the next immediate lines of this stand-up comedy routine."
 
 PROCESS_EXTS = [".flac", ".wav", ".mp3", ".m4a", ".webm"]
 
