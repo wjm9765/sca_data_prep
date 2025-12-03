@@ -211,9 +211,10 @@ def easy_load(dataset_path: Optional[Path] = None, cache_dir: Optional[Path] = P
 
 class RelationalAudioLoader:
     def __init__(self, audio_dataset):
-        self.audio_lookup = {
-            row['session_id']: row['audio']['bytes']
-            for row in audio_dataset
+        self.audio_dataset = audio_dataset
+        self.id_to_idx = {
+            sess_id: idx
+            for idx, sess_id in enumerate(audio_dataset["session_id"])
         }
 
     def __call__(self, batch):
@@ -222,10 +223,12 @@ class RelationalAudioLoader:
 
         for session_id, start, end in zip(batch['session_id'], batch['start_sec'], batch['end_sec']):
             try:
-                raw_bytes = self.audio_lookup.get(session_id)
+                row_idx = self.id_to_idx.get(session_id)
+                if row_idx is None:
+                    raise ValueError(f"Session {session_id} not found")
 
-                if raw_bytes is None:
-                    raise ValueError(f"Session {session_id} not found in storage")
+                audio_entry = self.audio_dataset[row_idx]["audio"]
+                raw_bytes = audio_entry['bytes']
 
                 with io.BytesIO(raw_bytes) as file_obj:
                     with sf.SoundFile(file_obj) as f:
