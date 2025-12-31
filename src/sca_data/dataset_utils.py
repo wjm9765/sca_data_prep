@@ -160,7 +160,7 @@ def to_talker_chat_format_batch(batch: dict, system_prompt: Optional[str] = None
                 "role": "assistant",
                 "content": [
                     {"type": "text", "text": text},
-                    {"type": "audio", "audio_waveform": target_audio["array"], "sampling_rate": 16000}
+                    {"type": "audio", "audio_waveform": target_audio["array"], "sampling_rate": 24000}
                 ]
             }
         ]
@@ -207,7 +207,7 @@ def to_chat_format_batch(batch: dict, system_prompt: Optional[str] = None, instr
     return {"messages": messages_list}
 
 
-def easy_load(dataset_path: Optional[Path] = None, cache_dir: Optional[Path] = Path('./dataset'), format: Literal["chat", "raw"] = "chat", system_prompt: Optional[str] = None, instruction_prompt: Optional[str] = None) -> Dataset:
+def easy_load(dataset_path: Optional[Path] = None, cache_dir: Optional[Path] = Path('./dataset'), format: Literal["chat", "raw", "talker_chat"] = "talker_chat", system_prompt: Optional[str] = None, instruction_prompt: Optional[str] = None) -> Dataset:
     if dataset_path is None:
         dataset_path = cache_dir / "sca_comedy_dataset"
         dataset_path.parent.mkdir(parents=True, exist_ok=True)
