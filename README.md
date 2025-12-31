@@ -44,8 +44,6 @@ First run `uv sync --extra full,cu128` (cuda version depends on your GPU, for CP
 ## Result files
 Inference results are available in the following location:
 
-[Full Dataset Files](https://web.aws.riverfog7.com/files/sca/dataset.tar.xz)
-
 [Inference Output Files Only](https://web.aws.riverfog7.com/files/sca/inference_outputs.jsonl)
 
 [Huggingface Datasets format dataset](https://web.aws.riverfog7.com/files/sca/sca_comedy_dataset.tar)
