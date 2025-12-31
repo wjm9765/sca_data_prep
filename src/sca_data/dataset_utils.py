@@ -14,7 +14,7 @@ from tqdm import tqdm
 
 from .constants import DEFAULT_SYSTEM_PROMPT, DEFAULT_INSTRUCTION_PROMPT
 from .models.events import ComedianEvent, BaseEvent, AudienceEvent, EnvironmentEvent, ComedySession
-from .utils import clean_audio_bytes
+from .utils import clean_audio_bytes, check_and_resample_audio
 
 
 def remove_extras(session: ComedySession, remove_events: Tuple[BaseEvent] = (AudienceEvent, EnvironmentEvent)) -> ComedySession:
@@ -102,14 +102,15 @@ def to_hf_dataset(sessions: Iterable[ComedySession], audio_base_path: Path, min_
                 original_bytes = f.read()
             
             try:
-                cleaned_bytes = clean_audio_bytes(original_bytes)
+                # Moshi's mimi neural audio codec takes 24kHz input
+                cleaned_bytes = clean_audio_bytes(original_bytes, target_sr=24000)
                 print(f"Cleaned audio for {sess_id} successfully.")
             except Exception as e:
                 print(f"Warning: Failed to clean audio for {sess_id}, using original. Error: {e}")
                 cleaned_bytes = original_bytes 
             yield {
                 "session_id": sess_id,
-                "audio": {"path": path, "bytes": original_bytes},    # 원본 (Context용)
+                "audio": {"path": path, "bytes": check_and_resample_audio(original_bytes, target_sr=16000)},    # 원본 (Context용)
                 "clean_audio": {"path": None, "bytes": cleaned_bytes} # AI 처리됨 (Target용)
             }
 

@@ -7,6 +7,7 @@ from typing import Optional, List
 
 import numpy as np
 import soundfile as sf
+import tensorflow as tf
 import torch
 import torchaudio
 from clearvoice import ClearVoice
@@ -23,7 +24,7 @@ def get_clearvoice_model():
         _CLEARVOICE_MODEL = ClearVoice(task='speech_enhancement', model_names=['MossFormer2_SE_48K'])
     return _CLEARVOICE_MODEL
 
-def clean_audio_bytes(raw_bytes: bytes, target_sr: int = 16000) -> bytes:
+def clean_audio_bytes(raw_bytes: bytes, target_sr: int = 24000) -> bytes:
     """
     Remove noise using ClearerVoice-Studio (MossFormer2).
     Logic: Load -> Resample(48k) -> Slice(60s) -> Process -> Concat -> Resample(16k) -> Bytes
@@ -101,10 +102,31 @@ def clean_audio_bytes(raw_bytes: bytes, target_sr: int = 16000) -> bytes:
     final_numpy_1d = final_tensor.squeeze().numpy()
     
     with io.BytesIO() as out_bio:
-        sf.write(out_bio, final_numpy_1d, target_sr, format='WAV', subtype='PCM_16')
+        sf.write(out_bio, final_numpy_1d, target_sr, format="FLAC")
         clean_bytes = out_bio.getvalue()
         
     return clean_bytes
+
+def check_and_resample_audio(raw_bytes: bytes, target_sr: int = 16000) -> bytes:
+    with io.BytesIO(raw_bytes) as bio:
+        wav, sr = torchaudio.load(bio)
+
+    if wav.shape[0] > 1:
+        wav = wav.mean(dim=0, keepdim=True)
+    elif wav.shape[0] == 1:
+        pass
+    else:
+        wav = wav.unsqueeze(0)
+    if sr != target_sr:
+        resampler = torchaudio.transforms.Resample(sr, target_sr)
+        wav_resampled = resampler(wav)
+    else:
+        wav_resampled = wav
+
+    with io.BytesIO() as out_bio:
+        sf.write(out_bio, wav_resampled.squeeze().numpy(), target_sr, format="FLAC")
+        resampled_bytes = out_bio.getvalue()
+    return resampled_bytes
 
 def get_video_id(url: str) -> Optional[str]:
     matched = re.search(r"(?:v=|\/)([0-9A-Za-z_-]{11})(?:&|\/|$)", url)
