@@ -7,10 +7,8 @@ from typing import Optional, List
 
 import numpy as np
 import soundfile as sf
-import tensorflow as tf
 import torch
 import torchaudio
-from clearvoice import ClearVoice
 
 from .models.audio import AudioSlice
 from .models.events import ComedianEvent, ComedySession, AudienceEvent
@@ -18,6 +16,7 @@ from .models.events import ComedianEvent, ComedySession, AudienceEvent
 # 전역 변수: 모델을 매번 로드하지 않고 캐싱하기 위함
 _CLEARVOICE_MODEL = None
 def get_clearvoice_model():
+    from clearvoice import ClearVoice
     global _CLEARVOICE_MODEL
     if _CLEARVOICE_MODEL is None:
         print("[Info] Loading ClearerVoice-Studio model (MossFormer2)...")
@@ -183,6 +182,7 @@ def cut_audio_base64(base_path: Path, slice: AudioSlice, sample_interval: int = 
 
 
 def class_names_from_csv(class_map_csv_text):
+    import tensorflow as tf
     class_names = []
     with tf.io.gfile.GFile(class_map_csv_text) as csvfile:
         reader = csv.DictReader(csvfile)
