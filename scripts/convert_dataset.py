@@ -64,6 +64,20 @@ def parse_args():
         help=f"Maximum duration (in seconds) for the audio"
     )
 
+    parser.add_argument(
+        "--cut-start",
+        type=int,
+        default=3,
+        help="Number of events to cut from the start of each audio file"
+    )
+
+    parser.add_argument(
+        "--cut-end",
+        type=int,
+        default=1,
+        help="Number of events to cut from the end of each audio file"
+    )
+
     return parser.parse_args()
 
 
@@ -115,7 +129,8 @@ def main():
     print("Converting to Hugging Face Dataset format...")
     try:
         hf_dataset = to_hf_dataset(processed_sessions, audio_base_path=audio_dir,
-                                   min_duration=args.min_duration, max_duration=args.max_duration)
+                                   min_duration=args.min_duration, max_duration=args.max_duration,
+                                   cut_start=args.cut_start, cut_end=args.cut_end)
 
         print(f"Saving dataset to: {output_dir}")
         hf_dataset.save_to_disk(output_dir)

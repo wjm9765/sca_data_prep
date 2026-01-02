@@ -65,7 +65,7 @@ def merge_close_events(session: ComedySession, gap_threshold: float = 0.5) -> Co
     return ComedySession(timeline=merged_timeline, video_id=session.video_id)
 
 
-def to_hf_dataset(sessions: Iterable[ComedySession], audio_base_path: Path, min_duration: float, max_duration: float) -> DatasetDict:
+def to_hf_dataset(sessions: Iterable[ComedySession], audio_base_path: Path, min_duration: float, max_duration: float, cut_start: int, cut_end: int) -> DatasetDict:
     event_rows = []
     unique_sessions = {}
     for session in sessions:
@@ -76,6 +76,8 @@ def to_hf_dataset(sessions: Iterable[ComedySession], audio_base_path: Path, min_
             unique_sessions[session.video_id] = str(audio_path[0])
 
         for i, event in enumerate(session.timeline):
+            if i < cut_start or i >= len(session.timeline) - cut_end:
+                continue
             if isinstance(event, ComedianEvent) and event.event_type == 'speech':
                 # Don't include very short or very long segments
                 if event.start < min_duration or event.start > max_duration:
