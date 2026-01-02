@@ -2,6 +2,7 @@
 
 import argparse
 import sys
+import traceback
 from pathlib import Path
 
 from sca_data.dataset_utils import remove_extras, assert_overlap, merge_close_events, to_hf_dataset
@@ -138,6 +139,8 @@ def main():
 
     except Exception as e:
         print(f"Error creating/saving dataset: {e}", file=sys.stderr)
+        print("\nFull traceback:", file=sys.stderr)
+        traceback.print_exc()
         sys.exit(1)
 
 

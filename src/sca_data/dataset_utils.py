@@ -100,23 +100,34 @@ def to_hf_dataset(sessions: Iterable[ComedySession], audio_base_path: Path, min_
 
     def audio_generator():
         for sess_id, path in tqdm(unique_sessions.items(), desc="Processing Audio"):
-            with open(path, "rb") as f:
-                original_bytes = f.read()
-            
-            # Moshi's mimi neural audio codec takes 24kHz input
-            cleaned_bytes = clean_audio_bytes(original_bytes, target_sr=24000)
-            print(f"Cleaned audio for {sess_id} successfully.")
-            
-            # Extract speaker embedding from cleaned audio (trims 30s from start/end)
-            speaker_embedding = extract_speaker_embedding(cleaned_bytes, sample_rate=24000)
-            print(f"Extracted speaker embedding for {sess_id}: shape {speaker_embedding.shape}")
-            
-            yield {
-                "session_id": sess_id,
-                "audio": {"bytes": check_and_resample_audio(original_bytes, target_sr=16000)},    # 원본 (Context용)
-                "clean_audio": {"bytes": cleaned_bytes},  # AI 처리됨 (Target용)
-                "speaker_embedding": speaker_embedding,   # [192] ECAPA-TDNN embedding
-            }
+            try:
+                with open(path, "rb") as f:
+                    original_bytes = f.read()
+                
+                # Moshi's mimi neural audio codec takes 24kHz input
+                print(f"[{sess_id}] Starting audio cleaning...")
+                cleaned_bytes = clean_audio_bytes(original_bytes, target_sr=24000)
+                print(f"[{sess_id}] Cleaned audio successfully.")
+                
+                # Extract speaker embedding from cleaned audio (trims 30s from start/end)
+                print(f"[{sess_id}] Extracting speaker embedding...")
+                speaker_embedding = extract_speaker_embedding(cleaned_bytes, sample_rate=24000)
+                print(f"[{sess_id}] Extracted speaker embedding: shape {speaker_embedding.shape}")
+                
+                yield {
+                    "session_id": sess_id,
+                    "audio": {"bytes": check_and_resample_audio(original_bytes, target_sr=16000)},    # 원본 (Context용)
+                    "clean_audio": {"bytes": cleaned_bytes},  # AI 처리됨 (Target용)
+                    "speaker_embedding": speaker_embedding,   # [192] ECAPA-TDNN embedding
+                }
+            except Exception as e:
+                print(f"\n{'='*80}")
+                print(f"ERROR processing session: {sess_id}")
+                print(f"Audio file: {path}")
+                print(f"Error type: {type(e).__name__}")
+                print(f"Error message: {str(e)}")
+                print(f"{'='*80}\n")
+                raise
 
     
     text_features = Features({
