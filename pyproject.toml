@@ -27,7 +27,7 @@ full = [
     "pytube>=15.0.0",
     "pytubefix>=10.3.4",
     "scipy>=1.16.3",
-    "speechbrain>=1.0.3",
+    "speechbrain",
     "tensorflow==2.18.0 ; sys_platform == 'darwin'",
     "tensorflow-hub>=0.16.1",
     "tensorflow-metal==1.2.0 ; sys_platform == 'darwin'",
@@ -64,6 +64,9 @@ torchaudio = [
     { index = "pytorch-cu128", extra = "cu128" },
     { index = "pytorch-cu130", extra = "cu130" },
 ]
+# Speechbrain develop branch
+# see PR: https://github.com/speechbrain/speechbrain/issues/3012
+speechbrain = { git = "https://github.com/speechbrain/speechbrain", rev = "264b642" }
 
 [[tool.uv.index]]
 name = "pytorch-cpu"
