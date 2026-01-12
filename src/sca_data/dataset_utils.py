@@ -1,6 +1,7 @@
 import io
 import shutil
 import tarfile
+import json
 from hashlib import md5
 from pathlib import Path
 from typing import Tuple, Optional, Iterable, Literal
@@ -9,12 +10,439 @@ import numpy as np
 import requests
 import soundfile as sf
 from datasets import DatasetDict, Dataset, load_from_disk
-from datasets import Features, Value, Audio, Sequence
+from datasets import Features, Value, Audio as HFAudio, Sequence
 from tqdm import tqdm
+import re 
+import math
+import torch, torchaudio
+from pydantic import BaseModel
+
 
 from .constants import DEFAULT_SYSTEM_PROMPT, DEFAULT_INSTRUCTION_PROMPT
 from .models.events import ComedianEvent, BaseEvent, AudienceEvent, EnvironmentEvent, ComedySession
 from .utils import clean_audio_bytes, check_and_resample_audio, extract_speaker_embedding, SPEAKER_EMBEDDING_DIM
+
+
+# 설정: 12.5 기준 4토큰
+CHUNK_DURATION = 0.32  
+SAMPLE_RATE_USER = 16000
+SAMPLE_RATE_TARGET = 24000
+
+class Audio(BaseModel):
+    waveform: np.ndarray 
+    sampling_rate: int 
+    class Config:
+        arbitrary_types_allowed = True 
+
+class BaseSequenceBlock(BaseModel):
+    type: Literal["user_audio", "target_text"]
+    audio: Optional[Audio] = None
+    text: Optional[str] = None
+    class Config:
+        arbitrary_types_allowed = True
+
+class DatasetRow(BaseModel):
+    input: list[BaseSequenceBlock] # [User, Text, User, Text ...] 형태
+    target_audio: np.ndarray       # 예측해야 할 Target Audio (24k)
+    class Config:
+        arbitrary_types_allowed = True
+
+def preprocess_dataset_to_24k(data_dir: Path):
+    src_dir = data_dir / "WAV"
+    dst_dir = data_dir / "WAV_24"
+    dst_dir.mkdir(parents=True, exist_ok=True)
+
+    files = list(src_dir.glob("*.wav"))
+    print(f">>> Pre-processing {len(files)} files to 24kHz...")
+
+    for wav_path in tqdm(files, desc="Resampling"):
+        # 1. Load Original (Likely 16k)
+        waveform, sr = torchaudio.load(wav_path)
+        
+        # 2. Resample to 24k
+        if sr != SAMPLE_RATE_TARGET: # 24000
+            resampler = torchaudio.transforms.Resample(orig_freq=sr, new_freq=SAMPLE_RATE_TARGET)
+            waveform_24k = resampler(waveform)
+        else:
+            waveform_24k = waveform
+
+        # 3. Save to WAV_24 (Same filename)
+        save_path = dst_dir / wav_path.name
+        torchaudio.save(save_path, waveform_24k, SAMPLE_RATE_TARGET)
+    
+    print(f">>> Completed! 24kHz files saved in {dst_dir}")
+
+def parse_aligned_script(txt_path:Path) -> list[dict]:
+    events=[]
+
+    pattern = re.compile(r'\[(\d+\.\d+),\s*(\d+\.\d+)\]\s+\S+\s+\S+\s+(.*)')
+    
+    if not txt_path.exists():
+        return []
+
+
+    IGNORE_TAGS = {
+        "[*]",       # 판독 불가
+        "[NPS]",     # 제3자 목소리
+        "[PII]",     # 개인정보 (이름 등)
+        "[SONANT]",  # 기침, 헛기침 등 생리적 소음
+        "[MUSIC]",   # 음악/흥얼거림
+        "[SYSTEM]",  # 기계음
+        "[ENS]"      # 환경 소음
+    }
+
+    with open(txt_path, 'r', encoding='utf-8') as f:
+        for line in f:
+            match = pattern.search(line)
+            if match:
+                start, end, content = match.groups()
+                start_t = float(start)
+                end_t = float(end)
+                content = content.strip()
+                
+                if content in IGNORE_TAGS:
+                    continue
+                
+                if not content:
+                    continue
+
+                #단어를 쪼갬 (why? 0.16초 후 5초 분량의 텍스트를 예측해야 한다면 지연시간 증가)
+                words = content.split()
+                
+                events.append({
+                    "start": start_t,
+                    "end": end_t,
+                    "text": content,
+                    "words": words,               
+                    "duration": end_t - start_t   
+                })
+    
+    """
+    {
+        "start": 0.315,
+        "end": 0.867,
+        "text": "[SONANT]"
+        "words": [],
+        "duration": 0.552
+    },
+    {
+        "start": 3.200,
+        "end": 5.320,
+        "text": "ah hello J P how are you today?",
+        "words": ["ah", "hello", "J", "P", "how", "are", "you", "today?"],
+        "duration": 2.12
+    },
+    {
+        "start": 9.920,
+        "end": 10.900,
+        "text": "yeah um."
+        .......
+    """
+    return sorted(events, key=lambda x: x["start"])
+
+
+def get_sliced_text(chunk_start: float, chunk_end: float, events: list[dict]):
+    sliced_text = ""
+    is_speech = False
+    
+    for evt in events:
+        overlap_start = max(chunk_start, evt["start"])
+        overlap_end = min(chunk_end, evt["end"])
+        
+        if overlap_end > overlap_start:
+            is_speech = True
+            
+            if evt["duration"] > 0 and evt["words"]:
+                rel_start = (overlap_start - evt["start"]) / evt["duration"]
+                rel_end = (overlap_end - evt["start"]) / evt["duration"]
+                
+                n_words = len(evt["words"])
+                
+                w_start = int(rel_start * n_words)
+                w_end = int(math.ceil(rel_end * n_words)) 
+                
+                w_start = max(0, w_start)
+                w_end = min(n_words, w_end)
+                
+                current_words = evt["words"][w_start:w_end]
+                if current_words:
+                    sliced_text = " ".join(current_words)
+                    
+            # 0.16초는 매우 짧으므로, 한 이벤트 안에 여러 청크가 들어감.
+            # 루프는 계속 돌되, 현재 청크 범위를 벗어난 이벤트는 볼 필요 없음
+        
+        if evt["start"] > chunk_end:
+            break
+            
+    return is_speech, sliced_text
+
+
+def ensure_mono_and_length(audio_chunk: np.ndarray, target_length: int) -> np.ndarray:
+    # 1. Mono 변환 (2채널 이상일 경우 평균)
+    if audio_chunk.ndim > 1:
+        audio_chunk = np.mean(audio_chunk, axis=1)
+    
+    # 2. 길이 맞춤
+    current_len = len(audio_chunk)
+    if current_len == target_length:
+        return audio_chunk.astype(np.float32)
+    elif current_len < target_length:
+        # 0.16*25000 보다 모자르면 뒤에 0 채우기
+        pad_width = target_length - current_len
+        return np.pad(audio_chunk, (0, pad_width), mode='constant').astype(np.float32)
+    else:
+        # 넘치면 자르기
+        return audio_chunk[:target_length].astype(np.float32)
+
+def create_duplex_dataset(data_dir: Path) -> DatasetDict:
+    wav_dir_16k = data_dir / "WAV"
+    wav_dir_24k = data_dir / "WAV_24" 
+    txt_dir = data_dir / "TXT"
+    
+    if not wav_dir_24k.exists() or not list(wav_dir_24k.glob("*.wav")):
+        print(">>> WAV_24 folder not found. Running pre-processing first...")
+        preprocess_dataset_to_24k(data_dir)
+
+    sessions = {}
+    for wav_file in wav_dir_16k.glob("*.wav"):
+        parts = wav_file.stem.split('_')
+        if len(parts) < 2: continue
+        group_key = "_".join(parts[:-1])
+        spk_id = parts[-1]
+        if group_key not in sessions: sessions[group_key] = []
+        
+        wav_24_path = wav_dir_24k / wav_file.name
+        
+        sessions[group_key].append({
+            "spk_id": spk_id, 
+            "wav_path_16k": wav_file,       # User용
+            "wav_path_24k": wav_24_path,    # Target용
+            "txt_path": txt_dir / f"{wav_file.stem}.txt"
+        })
+
+    def storage_generator():
+        for group_key, speakers in tqdm(sessions.items(), desc="Processing Storage"):
+            if len(speakers) < 2: continue
+            pairs = [(speakers[0], speakers[1]), (speakers[1], speakers[0])]
+            
+            for user_info, target_info in pairs:
+                with open(user_info["wav_path_16k"], "rb") as f: u_bytes = f.read()
+                with open(target_info["wav_path_24k"], "rb") as f: t_bytes = f.read()
+                
+                events = parse_aligned_script(target_info["txt_path"])
+                events_json_str = json.dumps(events)
+                
+                yield {
+                    "session_id": f"{group_key}_{target_info['spk_id']}",
+                    "user_audio": {"bytes": u_bytes, "path": None},   # 16k bytes
+                    "target_audio": {"bytes": t_bytes, "path": None}, # 24k bytes
+                    "events_json": events_json_str  
+                }
+
+    def train_generator():
+        for group_key, speakers in sessions.items():
+            if len(speakers) < 2: continue
+            pairs = [(speakers[0], speakers[1]), (speakers[1], speakers[0])]
+            for user_info, target_info in pairs:
+                sess_id = f"{group_key}_{target_info['spk_id']}"
+                
+                #sequence indexing based on 16k audio file
+                with sf.SoundFile(user_info["wav_path_16k"]) as f:
+                    max_len = len(f)
+                    sr = f.samplerate # 16000
+                
+                samples_per_step = int(CHUNK_DURATION * sr) # 16000 * 0.32 = 5120
+                
+                for seq_idx, start_sample in enumerate(range(0, max_len, samples_per_step)):
+                    end_sample = min(start_sample + samples_per_step, max_len)
+                    if end_sample - start_sample < samples_per_step: break
+                    
+                    yield {
+                        "session_id": sess_id,
+                        "seq_id": seq_idx,
+                        "start_sample": start_sample, # 16k 기준 시작점
+                        "end_sample": end_sample      # 16k 기준 끝점
+                    }
+
+    storage_features = Features({
+        "session_id": Value("string"),
+        "user_audio": HFAudio(decode=False), 
+        "target_audio": HFAudio(decode=False),
+        "events_json": Value("string") 
+    })
+    
+    train_features = Features({
+        "session_id": Value("string"),
+        "seq_id": Value("int32"),
+        "start_sample": Value("int64"),
+        "end_sample": Value("int64")
+    })
+
+    ds_storage = Dataset.from_generator(storage_generator, features=storage_features)
+    ds_train = Dataset.from_generator(train_generator, features=train_features)
+    
+    return DatasetDict({"storage": ds_storage, "train": ds_train})
+class DuplexTransform:
+    def __init__(self, storage_dataset):
+        self.storage = storage_dataset 
+        self.id_to_idx = {sid: i for i, sid in enumerate(storage_dataset["session_id"])}
+        
+
+        self.chunk_samples_user = int(CHUNK_DURATION * SAMPLE_RATE_USER)    # 16000 * 0.32 = 5120
+        self.chunk_samples_target = int(CHUNK_DURATION * SAMPLE_RATE_TARGET) # 24000 * 0.32 = 7680
+    
+    def __call__(self, batch):
+        out_dataset_rows = [] 
+        
+        batch_ids = batch["session_id"]
+        batch_starts = batch["start_sample"]
+        batch_ends = batch["end_sample"]
+
+        for i in range(len(batch_ids)):
+            sess_id = batch_ids[i]
+            start_idx_16k = batch_starts[i] 
+            end_idx_16k = batch_ends[i]     
+            
+            store_idx = self.id_to_idx[sess_id]
+            store_row = self.storage[store_idx]
+            
+            u_bytes = store_row["user_audio"]["bytes"]   # 16k bytes
+            t_bytes_24k = store_row["target_audio"]["bytes"] # 24k bytes (Pre-processed)
+            target_events = json.loads(store_row["events_json"])
+
+            sequence_input_blocks: list[BaseSequenceBlock] = []
+            
+            if start_idx_16k > 0:
+                with sf.SoundFile(io.BytesIO(u_bytes)) as f:
+                    # 0부터 현재까지 읽기
+                    u_history = f.read(start_idx_16k, dtype='float32')
+                if u_history.ndim > 1: u_history = np.mean(u_history, axis=1)
+
+                num_chunks = len(u_history) // self.chunk_samples_user
+                for c in range(num_chunks):
+                    c_start_sec = c * CHUNK_DURATION
+                    c_end_sec = c_start_sec + CHUNK_DURATION
+                    
+                    idx_s = c * self.chunk_samples_user
+                    idx_e = idx_s + self.chunk_samples_user
+                    u_chunk = ensure_mono_and_length(u_history[idx_s:idx_e], self.chunk_samples_user)
+                    
+                    sequence_input_blocks.append(BaseSequenceBlock(
+                        type="user_audio",
+                        audio=Audio(waveform=u_chunk, sampling_rate=SAMPLE_RATE_USER),
+                        text=None
+                    ))
+                    
+                    is_speech, text_slice = get_sliced_text(c_start_sec, c_end_sec, target_events)
+                    final_text = text_slice if (is_speech and text_slice) else ""
+                    
+                    sequence_input_blocks.append(BaseSequenceBlock(
+                        type="target_text",
+                        audio=None,
+                        text=final_text
+                    ))
+
+            # ------------------------------------------------------------------
+            # 2. Target Audio (Target 24k)
+            # 이미 24k 파일이므로 리샘플링 불필요. 대신 인덱스만 24k로 변환
+            # ------------------------------------------------------------------
+            ratio = SAMPLE_RATE_TARGET / SAMPLE_RATE_USER # 1.5
+            start_idx_24k = int(start_idx_16k * ratio)
+            end_idx_24k = int(end_idx_16k * ratio)
+            
+            with sf.SoundFile(io.BytesIO(t_bytes_24k)) as f:
+                f.seek(start_idx_24k)
+                t_chunk = f.read(end_idx_24k - start_idx_24k, dtype='float32')
+            
+            if t_chunk.ndim > 1: t_chunk = np.mean(t_chunk, axis=1)
+            
+            if len(t_chunk) < self.chunk_samples_target:
+                t_chunk = np.pad(t_chunk, (0, self.chunk_samples_target - len(t_chunk)))
+            elif len(t_chunk) > self.chunk_samples_target:
+                 t_chunk = t_chunk[:self.chunk_samples_target]
+
+            row_obj = DatasetRow(
+                input=sequence_input_blocks, 
+                target_audio=t_chunk
+            )
+            out_dataset_rows.append(row_obj)
+            
+        return {"dataset_row_obj": out_dataset_rows}
+   
+def duplex_data(data_dir: Optional[Path] = None, cache_dir: Optional[Path] = Path('./dataset_duplex')) -> Dataset:
+
+    dataset_path = cache_dir  
+    dataset_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_tar_path = dataset_path.parent / "temp_cache.tar"
+
+
+    if not dataset_path.exists():
+        if data_dir is not None and data_dir.exists():
+            print(f">>> Creating dataset from raw data at {data_dir}...")
+            dataset = create_duplex_dataset(data_dir)
+            dataset.save_to_disk(str(dataset_path))
+        else:
+            print(f">>> Raw data not provided. Fetching config from GitHub for Duplex...")
+            url_url = "https://raw.githubusercontent.com/riverfog7/sca_data_prep/refs/heads/main/.hf_dataset_url_duplex"
+            hash_url = "https://raw.githubusercontent.com/riverfog7/sca_data_prep/refs/heads/main/.hf_dataset_md5_duplex"
+            
+            #url_url = "https://raw.githubusercontent.com/wjm9765/sca_data_prep/refs/heads/main/.hf_dataset_url_duplex"
+            #hash_url = "https://raw.githubusercontent.com/wjm9765/sca_data_prep/refs/heads/main/.hf_dataset_md5_duplex"
+            
+            try:
+                print(f"Reading URL from {url_url}...")
+                dataset_url = requests.get(url_url).text.strip()
+                
+                print(f"Reading MD5 from {hash_url}...")
+                dataset_md5 = requests.get(hash_url).text.strip()
+                
+                print(f"Target URL: {dataset_url}")
+                
+                hash_func = md5()
+                dl_stream = requests.get(dataset_url, stream=True)
+                dl_stream.raise_for_status()
+                total_size = int(dl_stream.headers.get('content-length', 0))
+
+                with open(tmp_tar_path, "wb") as f, tqdm(
+                        desc="Downloading dataset",
+                        total=total_size,
+                        unit='B',
+                        unit_scale=True,
+                        unit_divisor=1024,
+                ) as bar:
+                    for chunk in dl_stream.iter_content(chunk_size=8192):
+                        f.write(chunk)
+                        hash_func.update(chunk)
+                        bar.update(len(chunk))
+
+                if hash_func.hexdigest() != dataset_md5:
+                    shutil.rmtree(dataset_path, ignore_errors=True)
+                    tmp_tar_path.unlink(missing_ok=True)
+                    raise ValueError(f"Downloaded dataset file is corrupted (MD5 mismatch)\nExpected: {dataset_md5}\nGot: {hash_func.hexdigest()}")
+
+                print(f">>> Extracting to {dataset_path.parent}...")
+                with tarfile.open(tmp_tar_path, "r") as tar:
+                    tar.extractall(path=dataset_path.parent)
+
+                
+            except Exception as e:
+                print(f"[Error] Download failed: {e}")
+                if tmp_tar_path.exists(): tmp_tar_path.unlink()
+                if dataset_path.exists(): shutil.rmtree(dataset_path, ignore_errors=True)
+                raise e
+            finally:
+                if tmp_tar_path.exists():
+                    tmp_tar_path.unlink()
+        
+        
+    print(f">>> Loading dataset from disk: {dataset_path}")
+    dataset = load_from_disk(str(dataset_path))
+    train_ds = dataset["train"]
+    
+    print(">>> Setting up DuplexTransform...")
+    train_ds.set_transform(DuplexTransform(dataset["storage"]))
+    
+    return train_ds
 
 
 def remove_extras(session: ComedySession, remove_events: Tuple[BaseEvent] = (AudienceEvent, EnvironmentEvent)) -> ComedySession:
@@ -100,6 +528,8 @@ def to_hf_dataset(sessions: Iterable[ComedySession], audio_base_path: Path, min_
                 raise ValueError(f"Unexpected event type in session {session.video_id}: {event}")
 
 
+
+
     def audio_generator():
         for sess_id, path in tqdm(unique_sessions.items(), desc="Processing Audio"):
             try:
@@ -136,16 +566,16 @@ def to_hf_dataset(sessions: Iterable[ComedySession], audio_base_path: Path, min_
         "session_id": Value("string"),
         "start_sec": Value("float"),
         "end_sec": Value("float"),
-        "target_start_sec": Value("float"), # 추가됨
-        "target_end_sec": Value("float"),   # 추가됨
+        "target_start_sec": Value("float"), 
+        "target_end_sec": Value("float"),   
         "target_text": Value("string"),
         "event_index": Value("int32"),
     })
     
     audio_features = Features({
         "session_id": Value("string"),
-        "audio": Audio(decode=False),       # 원본
-        "clean_audio": Audio(decode=False),  # Clean 버전 추가
+        "audio": HFAudio(decode=False),       
+        "clean_audio": HFAudio(decode=False), 
         "speaker_embedding": Sequence(Value("float32"), length=SPEAKER_EMBEDDING_DIM),  # [192] ECAPA-TDNN
     })
 
@@ -233,7 +663,11 @@ def to_chat_format_batch(batch: dict, system_prompt: Optional[str] = None, instr
     return {"messages": messages_list}
 
 
-def easy_load(dataset_path: Optional[Path] = None, cache_dir: Optional[Path] = Path('./dataset'), format: Literal["chat", "raw", "talker_chat"] = "talker_chat", system_prompt: Optional[str] = None, instruction_prompt: Optional[str] = None) -> Dataset:
+def easy_load(dataset_path: Optional[Path] = None, cache_dir: Optional[Path] = Path('./dataset'), format: Literal["chat", "raw", "talker_chat","duplex"] = "talker_chat", system_prompt: Optional[str] = None, instruction_prompt: Optional[str] = None) -> Dataset:
+    if format == "duplex":
+        return duplex_data(dataset_path, cache_dir)
+    
+    
     if dataset_path is None:
         dataset_path = cache_dir / "sca_comedy_dataset"
         dataset_path.parent.mkdir(parents=True, exist_ok=True)
