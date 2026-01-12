@@ -1,7 +1,9 @@
 import io
+import json
+import math
+import re
 import shutil
 import tarfile
-import json
 from hashlib import md5
 from pathlib import Path
 from typing import Tuple, Optional, Iterable, Literal
@@ -9,19 +11,15 @@ from typing import Tuple, Optional, Iterable, Literal
 import numpy as np
 import requests
 import soundfile as sf
+import torchaudio
 from datasets import DatasetDict, Dataset, load_from_disk
 from datasets import Features, Value, Audio as HFAudio, Sequence
-from tqdm import tqdm
-import re 
-import math
-import torch, torchaudio
 from pydantic import BaseModel
-
+from tqdm import tqdm
 
 from .constants import DEFAULT_SYSTEM_PROMPT, DEFAULT_INSTRUCTION_PROMPT
 from .models.events import ComedianEvent, BaseEvent, AudienceEvent, EnvironmentEvent, ComedySession
 from .utils import clean_audio_bytes, check_and_resample_audio, extract_speaker_embedding, SPEAKER_EMBEDDING_DIM
-
 
 # 설정: 12.5 기준 4토큰
 CHUNK_DURATION = 0.32  
@@ -43,7 +41,7 @@ class BaseSequenceBlock(BaseModel):
 
 class DatasetRow(BaseModel):
     input: list[BaseSequenceBlock] # [User, Text, User, Text ...] 형태
-    target_audio: np.ndarray       # 예측해야 할 Target Audio (24k)
+    target_audio: Audio       # 예측해야 할 Target Audio (24k)
     class Config:
         arbitrary_types_allowed = True
 
@@ -329,7 +327,7 @@ class DuplexTransform:
                     
                     sequence_input_blocks.append(BaseSequenceBlock(
                         type="user_audio",
-                        audio=Audio(waveform=u_chunk, sampling_rate=SAMPLE_RATE_USER),
+                        audio=Audio(waveform=u_chunk, sampling_rate=f.samplerate),
                         text=None
                     ))
                     
@@ -353,6 +351,7 @@ class DuplexTransform:
             with sf.SoundFile(io.BytesIO(t_bytes_24k)) as f:
                 f.seek(start_idx_24k)
                 t_chunk = f.read(end_idx_24k - start_idx_24k, dtype='float32')
+                t_sr = f.samplerate
             
             if t_chunk.ndim > 1: t_chunk = np.mean(t_chunk, axis=1)
             
@@ -363,7 +362,10 @@ class DuplexTransform:
 
             row_obj = DatasetRow(
                 input=sequence_input_blocks, 
-                target_audio=t_chunk
+                target_audio=Audio(
+                    waveform=t_chunk,
+                    sampling_rate=t_sr,
+                )
             )
             out_dataset_rows.append(row_obj)
             
