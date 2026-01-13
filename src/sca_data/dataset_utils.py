@@ -427,7 +427,7 @@ class DuplexTransform:
 
 def duplex_data(
     data_dir: Optional[Path] = None,
-    cache_dir: Optional[Path] = Path("./dataset_duplex"),
+    cache_dir: Path = Path("./dataset_duplex"),
 ) -> Dataset:
     dataset_path = cache_dir
     dataset_path.parent.mkdir(parents=True, exist_ok=True)
@@ -501,6 +501,7 @@ def duplex_data(
 
     print(f">>> Loading dataset from disk: {dataset_path}")
     dataset = load_from_disk(str(dataset_path))
+    assert isinstance(dataset, DatasetDict)
     train_ds = dataset["train"]
 
     print(">>> Setting up DuplexTransform...")
@@ -511,7 +512,7 @@ def duplex_data(
 
 def remove_extras(
     session: ComedySession,
-    remove_events: Tuple[BaseEvent] = (AudienceEvent, EnvironmentEvent),
+    remove_events: Tuple[type[BaseEvent], ...] = (AudienceEvent, EnvironmentEvent),
 ) -> ComedySession:
     filtered = []
     for event in session.timeline:
@@ -777,7 +778,7 @@ def to_chat_format_batch(
 
 def easy_load(
     dataset_path: Optional[Path] = None,
-    cache_dir: Optional[Path] = Path("./dataset"),
+    cache_dir: Path = Path("./dataset"),
     format: Literal["chat", "raw", "talker_chat", "duplex"] = "talker_chat",
     system_prompt: Optional[str] = None,
     instruction_prompt: Optional[str] = None,
@@ -826,6 +827,9 @@ def easy_load(
             tmp_tar_path.unlink(missing_ok=True)
 
     dataset = load_from_disk(dataset_path)
+    assert isinstance(dataset, DatasetDict), (
+        "Loaded dataset is not a DatasetDict. Something is corrupted."
+    )
     train_ds = dataset["train"]
 
     if format == "chat":

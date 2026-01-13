@@ -35,7 +35,7 @@ def get_ecapa_encoder():
 
 
 def get_clearvoice_model():
-    from clearvoice import ClearVoice
+    from clearvoice import ClearVoice  # type: ignore
 
     global _CLEARVOICE_MODEL
     if _CLEARVOICE_MODEL is None:
@@ -305,7 +305,10 @@ def build_comedy_session(
     comedian_events: List[ComedianEvent],
     audience_events: List[AudienceEvent],
 ) -> ComedySession:
-    timeline = comedian_events + audience_events
+    timeline = []
+    timeline.extend(comedian_events)
+    timeline.extend(audience_events)
+
     timeline.sort(key=lambda event: event.start)
 
     return ComedySession(video_id=video_id, timeline=timeline)

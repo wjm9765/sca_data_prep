@@ -32,12 +32,21 @@ def get_vad_slices(file_path: Path, slice_min: float = 5.0) -> SlicedAudioFile:
 
     except Exception as e:
         print(f"Error loading audio with Soundfile/Scipy: {e}")
-        return []
+        return SlicedAudioFile(file=file_path.absolute().name, slices=[])
 
     speech_timestamps = get_speech_timestamps(wav, model, return_seconds=True)
     total_duration = len(wav) / 16000.0
     if not speech_timestamps:
-        return [(0.0, total_duration)]
+        return SlicedAudioFile(
+            file=file_path.absolute().name,
+            slices=[
+                AudioSlice(
+                    start_time=0.0,
+                    end_time=total_duration,
+                    file=file_path.absolute().name,
+                )
+            ],
+        )
 
     cut_points = [0.0]
 

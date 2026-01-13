@@ -3,7 +3,7 @@
 import argparse
 import sys
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Optional
 
 from pytubefix import Search
 
@@ -11,7 +11,9 @@ from data_models import SearchResult, SearchEntry
 
 
 def search_youtube(
-    query: str, max_results: int = 5, filter: Callable[[SearchEntry], bool] = None
+    query: str,
+    max_results: int = 5,
+    filter: Optional[Callable[[SearchEntry], bool]] = None,
 ) -> SearchResult:
     s = Search(query)
     results = []
