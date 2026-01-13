@@ -9,15 +9,17 @@ from .models.audio import SlicedAudioFile, AudioSlice
 
 
 def get_vad_slices(file_path: Path, slice_min: float = 5.0) -> SlicedAudioFile:
-    model, utils = torch.hub.load(repo_or_dir='snakers4/silero-vad',
-                                  model='silero_vad',
-                                  force_reload=False,
-                                  trust_repo=True)
+    model, utils = torch.hub.load(
+        repo_or_dir="snakers4/silero-vad",
+        model="silero_vad",
+        force_reload=False,
+        trust_repo=True,
+    )
 
     (get_speech_timestamps, _, _, _, _) = utils
 
     try:
-        data, sr = sf.read(file_path.absolute(), dtype='float32')
+        data, sr = sf.read(file_path.absolute(), dtype="float32")
         if data.ndim > 1:
             data = np.mean(data, axis=1)
 
@@ -40,8 +42,8 @@ def get_vad_slices(file_path: Path, slice_min: float = 5.0) -> SlicedAudioFile:
     cut_points = [0.0]
 
     for i in range(len(speech_timestamps) - 1):
-        end_current = speech_timestamps[i]['end']
-        start_next = speech_timestamps[i + 1]['start']
+        end_current = speech_timestamps[i]["end"]
+        start_next = speech_timestamps[i + 1]["start"]
         midpoint = (end_current + start_next) / 2
         cut_points.append(midpoint)
 
@@ -85,6 +87,10 @@ def get_vad_slices(file_path: Path, slice_min: float = 5.0) -> SlicedAudioFile:
             else:
                 final_slices.append((0.0, total_duration))
 
-    return SlicedAudioFile(file=file_path.absolute().name, slices=[AudioSlice(start_time=s[0], end_time=s[1], file=file_path.absolute().name) for s in final_slices])
-
-
+    return SlicedAudioFile(
+        file=file_path.absolute().name,
+        slices=[
+            AudioSlice(start_time=s[0], end_time=s[1], file=file_path.absolute().name)
+            for s in final_slices
+        ],
+    )

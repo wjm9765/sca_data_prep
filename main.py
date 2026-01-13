@@ -39,9 +39,20 @@ def process_dir(dir_path: Path) -> List[str]:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Infer comedy sessions from audio files.")
-    parser.add_argument("input_path", type=str, help="Path to an audio file or a directory containing audio files.")
-    parser.add_argument("--save-file", type=str, default=None, help="Optional path to save the output JSON (or JSONL).")
+    parser = argparse.ArgumentParser(
+        description="Infer comedy sessions from audio files."
+    )
+    parser.add_argument(
+        "input_path",
+        type=str,
+        help="Path to an audio file or a directory containing audio files.",
+    )
+    parser.add_argument(
+        "--save-file",
+        type=str,
+        default=None,
+        help="Optional path to save the output JSON (or JSONL).",
+    )
     args = parser.parse_args()
 
     input_path = Path(args.input_path)

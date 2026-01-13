@@ -3,7 +3,7 @@ First run `uv sync --extra full,cu128` (cuda version depends on your GPU, for CP
 
 1. Run the search script to find videos with a filter
 ```bash
-./scripts/search.py StandUp Comedy English --output-format json --max-results 50 --min-length 900 --max-length 2400 --save-file ./dataset/videos.json 
+./scripts/search.py StandUp Comedy English --output-format json --max-results 50 --min-length 900 --max-length 2400 --save-file ./dataset/videos.json
 ```
 
 2. Run the download script to download videos from the search results
@@ -79,5 +79,3 @@ Inference results are available in the following location:
 [Huggingface Datasets format dataset](https://web.aws.riverfog7.com/files/sca/sca_comedy_dataset.tar)
 
 [Huggingface Datasets format dataset_for_<full-duplex>](https://huggingface.co/datasets/wjm9765/sca_full_duplex/resolve/main/sca_duplex_cache.tar?download=true)
-
-

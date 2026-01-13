@@ -10,7 +10,9 @@ from pytubefix import Search
 from data_models import SearchResult, SearchEntry
 
 
-def search_youtube(query: str, max_results: int = 5, filter: Callable[[SearchEntry], bool] = None) -> SearchResult:
+def search_youtube(
+    query: str, max_results: int = 5, filter: Callable[[SearchEntry], bool] = None
+) -> SearchResult:
     s = Search(query)
     results = []
     search_results = []
@@ -31,14 +33,32 @@ def search_youtube(query: str, max_results: int = 5, filter: Callable[[SearchEnt
             results.append(result)
     return SearchResult(count=len(results), results=results)
 
+
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Search YouTube for videos matching a query.")
+    parser = argparse.ArgumentParser(
+        description="Search YouTube for videos matching a query."
+    )
     parser.add_argument("query", type=str, nargs="+", help="Search query")
-    parser.add_argument("--max-results", type=int, default=50, help="Maximum number of results to return")
-    parser.add_argument("--output-format", type=str, choices=["text", "json"], default="text", help="Output format")
+    parser.add_argument(
+        "--max-results",
+        type=int,
+        default=50,
+        help="Maximum number of results to return",
+    )
+    parser.add_argument(
+        "--output-format",
+        type=str,
+        choices=["text", "json"],
+        default="text",
+        help="Output format",
+    )
     parser.add_argument("--save-file", type=str, help="File to save results")
-    parser.add_argument("--min-length", type=int, help="Minimum video length in seconds")
-    parser.add_argument("--max-length", type=int, help="Maximum video length in seconds")
+    parser.add_argument(
+        "--min-length", type=int, help="Minimum video length in seconds"
+    )
+    parser.add_argument(
+        "--max-length", type=int, help="Maximum video length in seconds"
+    )
     args = parser.parse_args()
 
     def filter_func(entry: SearchEntry) -> bool:
@@ -56,7 +76,9 @@ if __name__ == "__main__":
     else:
         out_stream = sys.stdout
 
-    result = search_youtube(args.query, max_results=args.max_results, filter=filter_func)
+    result = search_youtube(
+        args.query, max_results=args.max_results, filter=filter_func
+    )
     match args.output_format:
         case "json":
             output = result.model_dump_json(indent=2)
@@ -64,7 +86,9 @@ if __name__ == "__main__":
             output_lines = [f"Found {result.count} results for query: '{args.query}'"]
             for i, entry in enumerate(result.results, 1):
                 minutes, seconds = divmod(entry.length, 60)
-                output_lines.append(f"{i}. {entry.title} - {entry.url} ({minutes}m{seconds}s)")
+                output_lines.append(
+                    f"{i}. {entry.title} - {entry.url} ({minutes}m{seconds}s)"
+                )
             output = "\n".join(output_lines)
         case _:
             raise ValueError(f"Unsupported output format: {args.output_format}")

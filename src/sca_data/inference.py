@@ -6,11 +6,21 @@ import numpy as np
 import tensorflow_hub as hub
 import whisper
 
-from .constants import YAMNET_TO_REACTION, FRAME_HOP_SEC, WINDOW_SEC, DEVICE, WHISPER_MODEL, WHISPER_CACHE, YAMNET_HUB_URL
+from .constants import (
+    YAMNET_TO_REACTION,
+    FRAME_HOP_SEC,
+    WINDOW_SEC,
+    DEVICE,
+    WHISPER_MODEL,
+    WHISPER_CACHE,
+    YAMNET_HUB_URL,
+)
 from .models.events import ComedianEvent, AudienceEvent, ComedySession
 from .utils import class_names_from_csv, to_comedian_event, build_comedy_session
 
-whisper_model = whisper.load_model(WHISPER_MODEL, download_root=WHISPER_CACHE, device=DEVICE)
+whisper_model = whisper.load_model(
+    WHISPER_MODEL, download_root=WHISPER_CACHE, device=DEVICE
+)
 
 yamnet_model = hub.load(YAMNET_HUB_URL)
 class_map_path = yamnet_model.class_map_path().numpy()
@@ -31,13 +41,13 @@ def run_yamnet(audio_path: str) -> np.ndarray:
     waveform, sr = librosa.load(audio_path, sr=16000, mono=True)
     waveform = waveform.astype(np.float32)
     scores, embeddings, spectrogram = yamnet_model(waveform)
-    scores_np = scores.numpy()   # [num_frames, num_classes]
+    scores_np = scores.numpy()  # [num_frames, num_classes]
     return scores_np
 
 
-def extract_audience_events(scores_np,
-                            score_thresh: float = 0.3,
-                            min_duration: float = 0.3) -> List[AudienceEvent]:
+def extract_audience_events(
+    scores_np, score_thresh: float = 0.3, min_duration: float = 0.3
+) -> List[AudienceEvent]:
     """
     YAMNet scores → AudienceEvent 리스트로 변환.
 
@@ -100,12 +110,14 @@ def extract_audience_events(scores_np,
                 duration = end_t - start_t
 
                 if duration >= min_duration:
-                    events.append(AudienceEvent(
-                        start=float(start_t),
-                        end=float(end_t),
-                        content=f"[{current_reaction}]",
-                        reaction_type=current_reaction,
-                    ))
+                    events.append(
+                        AudienceEvent(
+                            start=float(start_t),
+                            end=float(end_t),
+                            content=f"[{current_reaction}]",
+                            reaction_type=current_reaction,
+                        )
+                    )
 
             # 새 이벤트 시작 (reaction가 None이면 그냥 쉬는 구간)
             current_reaction = reaction
@@ -119,19 +131,21 @@ def extract_audience_events(scores_np,
         duration = end_t - start_t
 
         if duration >= min_duration:
-            events.append(AudienceEvent(
-                start=float(start_t),
-                end=float(end_t),
-                content=f"[{current_reaction}]",
-                reaction_type=current_reaction,
-            ))
+            events.append(
+                AudienceEvent(
+                    start=float(start_t),
+                    end=float(end_t),
+                    content=f"[{current_reaction}]",
+                    reaction_type=current_reaction,
+                )
+            )
 
     return events
 
 
-def infer_audience_events(file_path: Path,
-                          score_thresh: float = 0.3,
-                          min_duration: float = 0.3) -> List[AudienceEvent]:
+def infer_audience_events(
+    file_path: Path, score_thresh: float = 0.3, min_duration: float = 0.3
+) -> List[AudienceEvent]:
     scores_np = run_yamnet(file_path.absolute().as_posix())
     audience_events = extract_audience_events(
         scores_np,
