@@ -1,3 +1,4 @@
+name: ci-lint
 on:
   push:
     branches:
