@@ -16,6 +16,9 @@ from datasets import DatasetDict, Dataset, load_from_disk
 from datasets import Features, Value, Audio as HFAudio, Sequence
 from pydantic import BaseModel
 from tqdm import tqdm
+from dataclasses import dataclass #dataclass annotation 추가
+
+from transformers import Qwen3OmniMoeProcessor
 
 from .constants import DEFAULT_SYSTEM_PROMPT, DEFAULT_INSTRUCTION_PROMPT
 from .models.events import (
@@ -37,30 +40,39 @@ CHUNK_DURATION = 0.32
 SAMPLE_RATE_USER = 16000
 SAMPLE_RATE_TARGET = 24000
 
+@dataclass
+class DuplexConfig:
+    audio_placeholder_token: int = -100 
+    audio_token_ratio: int = 4          # [Modified] 오디오 청크 당 -100 개수 (4개)
+    text_token_slice_len: int = 2       # 청크당 가져올 텍스트 토큰 수
+    silence_token_id: int = 151643      # 묵음 토큰
+    max_token_length: int = 40000       
+    model_path: str = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
 
-class Audio(BaseModel):
+    system_prompt_text: str = (
+        "You are a useful assistant capable of full-duplex interaction. "
+        "You can listen and speak simultaneously to act as a comedian assistant."
+    )
+
+@dataclass
+class Audio:
     waveform: np.ndarray
     sampling_rate: int
 
-    class Config:
-        arbitrary_types_allowed = True
+@dataclass
+class AudioSeg:
+    text_token_idxs: list[int]  # 전체 input_sequence 내에서 해당 오디오에 대응하는 텍스트가 위치한 인덱스들
+    audio: Audio
 
-
-class BaseSequenceBlock(BaseModel):
-    type: Literal["user_audio", "target_text"]
-    audio: Optional[Audio] = None
-    text: Optional[str] = None
-
-    class Config:
-        arbitrary_types_allowed = True
-
-
-class DatasetRow(BaseModel):
-    input: list[BaseSequenceBlock]  # [User, Text, User, Text ...] 형태
-    target_audio: Audio  # 예측해야 할 Target Audio (24k)
-
-    class Config:
-        arbitrary_types_allowed = True
+@dataclass
+class DatasetRow:
+    # LLM에 들어갈 최종 입력 시퀀스 (Audio Placeholder Token + Text Token이 인터리빙된 형태)
+    input_sequence: list[int]    
+    # Loss 계산 및 음성 합성을 위한 타겟 오디오 리스트
+    target_audios: list[AudioSeg]
+    input_audios: list[Audio]
+    # 화자 임베딩 (192차원 등)
+    speaker_embedding: np.ndarray
 
 
 def preprocess_dataset_to_24k(data_dir: Path):
@@ -91,7 +103,7 @@ def preprocess_dataset_to_24k(data_dir: Path):
     print(f">>> Completed! 24kHz files saved in {dst_dir}")
 
 
-def parse_aligned_script(txt_path: Path) -> list[dict]:
+def parse_aligned_script(txt_path: Path, tokenizer) -> list[dict]:
     events = []
 
     pattern = re.compile(r"\[(\d+\.\d+),\s*(\d+\.\d+)\]\s+\S+\s+\S+\s+(.*)")
@@ -108,93 +120,51 @@ def parse_aligned_script(txt_path: Path) -> list[dict]:
         "[SYSTEM]",  # 기계음
         "[ENS]",  # 환경 소음
     }
-
     with open(txt_path, "r", encoding="utf-8") as f:
-        for line in f:
-            match = pattern.search(line)
-            if match:
-                start, end, content = match.groups()
-                start_t = float(start)
-                end_t = float(end)
-                content = content.strip()
+            for line in f:
+                match = pattern.search(line)
+                if match:
+                    start, end, content = match.groups()
+                    start_t = float(start)
+                    end_t = float(end)
+                    content = content.strip()
 
-                if content in IGNORE_TAGS:
-                    continue
+                    if content in IGNORE_TAGS or not content: continue
+                    
+                    # [Optimization] 미리 토크나이징해서 ID 저장
+                    token_ids = tokenizer.encode(content, add_special_tokens=False)
 
-                if not content:
-                    continue
-
-                # 단어를 쪼갬 (why? 0.16초 후 5초 분량의 텍스트를 예측해야 한다면 지연시간 증가)
-                words = content.split()
-
-                events.append(
-                    {
+                    events.append({
                         "start": start_t,
                         "end": end_t,
                         "text": content,
-                        "words": words,
+                        "input_ids": token_ids, # [NEW] 저장됨
                         "duration": end_t - start_t,
-                    }
-                )
+                    })
 
     """
     {
         "start": 0.315,
         "end": 0.867,
-        "text": "[SONANT]"
-        "words": [],
+        "text": "[SONANT]", 
+        "input_ids": [....],  # 토크나이징된 ID 리스트
         "duration": 0.552
     },
     {
         "start": 3.200,
         "end": 5.320,
         "text": "ah hello J P how are you today?",
-        "words": ["ah", "hello", "J", "P", "how", "are", "you", "today?"],
         "duration": 2.12
     },
     {
         "start": 9.920,
         "end": 10.900,
-        "text": "yeah um."
+        "text": "yeah um.",
         .......
     """
     return sorted(events, key=lambda x: x["start"])
 
 
-def get_sliced_text(chunk_start: float, chunk_end: float, events: list[dict]):
-    sliced_text = ""
-    is_speech = False
-
-    for evt in events:
-        overlap_start = max(chunk_start, evt["start"])
-        overlap_end = min(chunk_end, evt["end"])
-
-        if overlap_end > overlap_start:
-            is_speech = True
-
-            if evt["duration"] > 0 and evt["words"]:
-                rel_start = (overlap_start - evt["start"]) / evt["duration"]
-                rel_end = (overlap_end - evt["start"]) / evt["duration"]
-
-                n_words = len(evt["words"])
-
-                w_start = int(rel_start * n_words)
-                w_end = int(math.ceil(rel_end * n_words))
-
-                w_start = max(0, w_start)
-                w_end = min(n_words, w_end)
-
-                current_words = evt["words"][w_start:w_end]
-                if current_words:
-                    sliced_text = " ".join(current_words)
-
-            # 0.16초는 매우 짧으므로, 한 이벤트 안에 여러 청크가 들어감.
-            # 루프는 계속 돌되, 현재 청크 범위를 벗어난 이벤트는 볼 필요 없음
-
-        if evt["start"] > chunk_end:
-            break
-
-    return is_speech, sliced_text
 
 
 def ensure_mono_and_length(audio_chunk: np.ndarray, target_length: int) -> np.ndarray:
@@ -214,8 +184,7 @@ def ensure_mono_and_length(audio_chunk: np.ndarray, target_length: int) -> np.nd
         # 넘치면 자르기
         return audio_chunk[:target_length].astype(np.float32)
 
-
-def create_duplex_dataset(data_dir: Path) -> DatasetDict:
+def create_duplex_dataset(data_dir: Path, model_path: str) -> DatasetDict:
     wav_dir_16k = data_dir / "WAV"
     wav_dir_24k = data_dir / "WAV_24"
     txt_dir = data_dir / "TXT"
@@ -223,211 +192,243 @@ def create_duplex_dataset(data_dir: Path) -> DatasetDict:
     if not wav_dir_24k.exists() or not list(wav_dir_24k.glob("*.wav")):
         print(">>> WAV_24 folder not found. Running pre-processing first...")
         preprocess_dataset_to_24k(data_dir)
+    
+    # [NEW] Tokenizer 로드 (Pre-tokenization용)
+    print(f">>> Loading Tokenizer from {model_path} for pre-processing...")
+    processor = Qwen3OmniMoeProcessor.from_pretrained(model_path, trust_remote_code=True)
+    tokenizer = processor.tokenizer
 
     sessions = {}
     for wav_file in wav_dir_16k.glob("*.wav"):
         parts = wav_file.stem.split("_")
-        if len(parts) < 2:
-            continue
+        if len(parts) < 2: continue
         group_key = "_".join(parts[:-1])
         spk_id = parts[-1]
-        if group_key not in sessions:
-            sessions[group_key] = []
-
-        wav_24_path = wav_dir_24k / wav_file.name
-
-        sessions[group_key].append(
-            {
-                "spk_id": spk_id,
-                "wav_path_16k": wav_file,  # User용
-                "wav_path_24k": wav_24_path,  # Target용
-                "txt_path": txt_dir / f"{wav_file.stem}.txt",
-            }
-        )
+        if group_key not in sessions: sessions[group_key] = []
+        sessions[group_key].append({
+            "spk_id": spk_id, "wav_path_16k": wav_file,
+            "wav_path_24k": wav_dir_24k / wav_file.name,
+            "txt_path": txt_dir / f"{wav_file.stem}.txt",
+        })
 
     def storage_generator():
         for group_key, speakers in tqdm(sessions.items(), desc="Processing Storage"):
-            if len(speakers) < 2:
-                continue
+            if len(speakers) < 2: continue
             pairs = [(speakers[0], speakers[1]), (speakers[1], speakers[0])]
-
             for user_info, target_info in pairs:
-                with open(user_info["wav_path_16k"], "rb") as f:
-                    u_bytes = f.read()
-                with open(target_info["wav_path_24k"], "rb") as f:
-                    t_bytes = f.read()
-
-                events = parse_aligned_script(target_info["txt_path"])
-                events_json_str = json.dumps(events)
-
+                with open(user_info["wav_path_16k"], "rb") as f: u_bytes = f.read()
+                with open(target_info["wav_path_24k"], "rb") as f: t_bytes = f.read()
+                
+                # [Modified] Tokenizer 전달
+                events = parse_aligned_script(target_info["txt_path"], tokenizer)
+                
                 yield {
                     "session_id": f"{group_key}_{target_info['spk_id']}",
-                    "user_audio": {"bytes": u_bytes, "path": None},  # 16k bytes
-                    "target_audio": {"bytes": t_bytes, "path": None},  # 24k bytes
-                    "events_json": events_json_str,
+                    "user_audio": {"bytes": u_bytes, "path": None},
+                    "target_audio": {"bytes": t_bytes, "path": None},
+                    "events_json": json.dumps(events),
                 }
 
     def train_generator():
         for group_key, speakers in sessions.items():
-            if len(speakers) < 2:
-                continue
+            if len(speakers) < 2: continue
             pairs = [(speakers[0], speakers[1]), (speakers[1], speakers[0])]
             for user_info, target_info in pairs:
                 sess_id = f"{group_key}_{target_info['spk_id']}"
-
-                # sequence indexing based on 16k audio file
                 with sf.SoundFile(user_info["wav_path_16k"]) as f:
                     max_len = len(f)
-                    sr = f.samplerate  # 16000
-
-                samples_per_step = int(CHUNK_DURATION * sr)  # 16000 * 0.32 = 5120
-
-                for seq_idx, start_sample in enumerate(
-                    range(0, max_len, samples_per_step)
-                ):
+                    sr = f.samplerate
+                samples_per_step = int(CHUNK_DURATION * sr)
+                for seq_idx, start_sample in enumerate(range(0, max_len, samples_per_step)):
                     end_sample = min(start_sample + samples_per_step, max_len)
-                    if end_sample - start_sample < samples_per_step:
-                        break
-
+                    if end_sample - start_sample < samples_per_step: break
                     yield {
-                        "session_id": sess_id,
-                        "seq_id": seq_idx,
-                        "start_sample": start_sample,  # 16k 기준 시작점
-                        "end_sample": end_sample,  # 16k 기준 끝점
+                        "session_id": sess_id, "seq_id": seq_idx,
+                        "start_sample": start_sample, "end_sample": end_sample,
                     }
-
-    storage_features = Features(
-        {
-            "session_id": Value("string"),
-            "user_audio": HFAudio(decode=False),
-            "target_audio": HFAudio(decode=False),
-            "events_json": Value("string"),
-        }
-    )
-
-    train_features = Features(
-        {
-            "session_id": Value("string"),
-            "seq_id": Value("int32"),
-            "start_sample": Value("int64"),
-            "end_sample": Value("int64"),
-        }
-    )
-
+    
+    storage_features = Features({
+        "session_id": Value("string"), "user_audio": HFAudio(decode=False),
+        "target_audio": HFAudio(decode=False), "events_json": Value("string"),
+    })
+    train_features = Features({
+        "session_id": Value("string"), "seq_id": Value("int32"),
+        "start_sample": Value("int64"), "end_sample": Value("int64"),
+    })
     ds_storage = Dataset.from_generator(storage_generator, features=storage_features)
     ds_train = Dataset.from_generator(train_generator, features=train_features)
-
     return DatasetDict({"storage": ds_storage, "train": ds_train})
 
-
 class DuplexTransform:
-    def __init__(self, storage_dataset):
+    def __init__(self, storage_dataset, config: DuplexConfig):
         self.storage = storage_dataset
+        self.config = config
         self.id_to_idx = {sid: i for i, sid in enumerate(storage_dataset["session_id"])}
+        self.chunk_samples_user = int(CHUNK_DURATION * SAMPLE_RATE_USER)
+        self.chunk_samples_target = int(CHUNK_DURATION * SAMPLE_RATE_TARGET)
 
-        self.chunk_samples_user = int(
-            CHUNK_DURATION * SAMPLE_RATE_USER
-        )  # 16000 * 0.32 = 5120
-        self.chunk_samples_target = int(
-            CHUNK_DURATION * SAMPLE_RATE_TARGET
-        )  # 24000 * 0.32 = 7680
+        # Tokenizer는 Padding ID 확인 등을 위해 로드는 필요함 (토크나이징은 안 함)
+        print(f">>> Loading Processor from {config.model_path} for Pad ID check...")
+        try:
+            self.processor = Qwen3OmniMoeProcessor.from_pretrained(config.model_path, trust_remote_code=True)
+            self.tokenizer = self.processor.tokenizer
+            self.pad_token_id = self.tokenizer.pad_token_id if self.tokenizer.pad_token_id is not None else config.silence_token_id
+            
+            # [NEW] 시스템 프롬프트 토크나이징 (한번만)
+            self.system_prompt_ids = self.tokenizer.encode(DEFAULT_SYSTEM_PROMPT, add_special_tokens=False)
+            
+        except Exception as e:
+            print(f"[Warning] Failed to load tokenizer: {e}")
+            raise e
 
     def __call__(self, batch):
         out_dataset_rows = []
-
         batch_ids = batch["session_id"]
         batch_starts = batch["start_sample"]
-        batch_ends = batch["end_sample"]
-
+        
         for i in range(len(batch_ids)):
             sess_id = batch_ids[i]
             start_idx_16k = batch_starts[i]
-            end_idx_16k = batch_ends[i]
-
             store_idx = self.id_to_idx[sess_id]
             store_row = self.storage[store_idx]
 
-            u_bytes = store_row["user_audio"]["bytes"]  # 16k bytes
-            t_bytes_24k = store_row["target_audio"][
-                "bytes"
-            ]  # 24k bytes (Pre-processed)
+            u_bytes = store_row["user_audio"]["bytes"]
+            t_bytes_24k = store_row["target_audio"]["bytes"]
             target_events = json.loads(store_row["events_json"])
 
-            sequence_input_blocks: list[BaseSequenceBlock] = []
+            try:
+                speaker_embedding = extract_speaker_embedding(t_bytes_24k, sample_rate=24000)
+            except:
+                speaker_embedding = np.zeros(SPEAKER_EMBEDDING_DIM, dtype=np.float32)
 
+            # 1. 시퀀스 및 오디오 리스트 초기화
+            input_sequence = list(self.system_prompt_ids)
+            input_audios_list: list[Audio] = []
+            
+            # [Logic] 이벤트별 토큰 인덱스를 추적하기 위한 맵
+            # Key: event_index (in target_events), Value: list of indices in input_sequence
+            event_token_map: dict[int, list[int]] = {}
+
+            last_matched_event_idx = -1 
+            current_token_offset = 0
+            
             if start_idx_16k > 0:
                 with sf.SoundFile(io.BytesIO(u_bytes)) as f:
-                    # 0부터 현재까지 읽기
                     u_history = f.read(start_idx_16k, dtype="float32")
-                if u_history.ndim > 1:
-                    u_history = np.mean(u_history, axis=1)
+                if u_history.ndim > 1: u_history = np.mean(u_history, axis=1)
 
                 num_chunks = len(u_history) // self.chunk_samples_user
+                
                 for c in range(num_chunks):
+                    # --- [Step A] User Audio ---
                     c_start_sec = c * CHUNK_DURATION
                     c_end_sec = c_start_sec + CHUNK_DURATION
-
+                    c_center_sec = (c_start_sec + c_end_sec) / 2
+                    
                     idx_s = c * self.chunk_samples_user
                     idx_e = idx_s + self.chunk_samples_user
-                    u_chunk = ensure_mono_and_length(
-                        u_history[idx_s:idx_e], self.chunk_samples_user
-                    )
+                    u_chunk = ensure_mono_and_length(u_history[idx_s:idx_e], self.chunk_samples_user)
+                    
+                    input_audios_list.append(Audio(waveform=u_chunk, sampling_rate=SAMPLE_RATE_USER))
+                    
+                    # [Modified] -100을 audio_token_ratio(4) 개수만큼 넣음
+                    input_sequence.extend([self.config.audio_placeholder_token] * self.config.audio_token_ratio)
 
-                    sequence_input_blocks.append(
-                        BaseSequenceBlock(
-                            type="user_audio",
-                            audio=Audio(waveform=u_chunk, sampling_rate=f.samplerate),
-                            text=None,
-                        )
-                    )
+                    # --- [Step B] Text Streaming Logic ---
+                    matched_event_idx = -1
+                    matched_event = None
+                    for e_idx, evt in enumerate(target_events):
+                        if evt["start"] <= c_center_sec < evt["end"]:
+                            matched_event = evt
+                            matched_event_idx = e_idx
+                            break
+                    
+                    if matched_event_idx != last_matched_event_idx:
+                        current_token_offset = 0
+                        last_matched_event_idx = matched_event_idx
+                    
+                    current_text_ids = []
+                    if matched_event and "input_ids" in matched_event:
+                        full_ids = matched_event["input_ids"]
+                        
+                        start_idx = current_token_offset
+                        end_idx = start_idx + self.config.text_token_slice_len
+                        sliced = full_ids[start_idx:end_idx]
+                        
+                        if len(sliced) == 2:
+                            current_text_ids = sliced
+                        elif len(sliced) == 1:
+                            current_text_ids = [sliced[0], self.pad_token_id]
+                        else:
+                            current_text_ids = [self.pad_token_id, self.pad_token_id]
+                        
+                        current_token_offset += self.config.text_token_slice_len
+                    else:
+                        current_text_ids = [self.config.silence_token_id] # silence token add only 1
 
-                    is_speech, text_slice = get_sliced_text(
-                        c_start_sec, c_end_sec, target_events
-                    )
-                    final_text = text_slice if (is_speech and text_slice) else ""
+                    start_text_idx = len(input_sequence)
+                    input_sequence.extend(current_text_ids)
+                    text_token_indices = list(range(start_text_idx, len(input_sequence)))
 
-                    sequence_input_blocks.append(
-                        BaseSequenceBlock(
-                            type="target_text", audio=None, text=final_text
-                        )
-                    )
+            #4만 토큰 넘어가면 안됨
+            if len(input_sequence) > self.config.max_token_length:
+                print(f"[Warning] Truncating input sequence from {len(input_sequence)} to {self.config.max_token_length} tokens.")
+                input_sequence = input_sequence[:self.config.max_token_length]
 
-            # ------------------------------------------------------------------
-            # 2. Target Audio (Target 24k)
-            # 이미 24k 파일이므로 리샘플링 불필요. 대신 인덱스만 24k로 변환
-            # ------------------------------------------------------------------
-            ratio = SAMPLE_RATE_TARGET / SAMPLE_RATE_USER  # 1.5
-            start_idx_24k = int(start_idx_16k * ratio)
-            end_idx_24k = int(end_idx_16k * ratio)
 
+            # Target Audio 처리
+            target_audios_list: list[AudioSeg] = []
+            
+            # Target Audio 전체 로드 (24k)
             with sf.SoundFile(io.BytesIO(t_bytes_24k)) as f:
-                f.seek(start_idx_24k)
-                t_chunk = f.read(end_idx_24k - start_idx_24k, dtype="float32")
-                t_sr = f.samplerate
+                # 전체 waveform 로드 (효율성을 위해 필요 시 부분 로드 가능하나, 보통 전체 로드가 편함)
+                # 여기서는 start_idx까지 필요가 아니라, 전체 스크립트를 커버해야 함.
+                # 하지만, 위에서 loop는 start_idx까지만 돌았음 (이전 대화 맥락).
+                # *수정*: dataset 구성상 'start_idx'는 현재 학습할 시퀀스의 시작점이 아니라,
+                # 전체 파일 처리 후 잘라서 쓰는 구조라면 전체를 읽어야 함.
+                # 코드 구조상 `start_idx`는 "이 지점까지의 user history"를 의미.
+                full_target_audio = f.read(dtype="float32")
+                if full_target_audio.ndim > 1:
+                    full_target_audio = np.mean(full_target_audio, axis=1)
 
-            if t_chunk.ndim > 1:
-                t_chunk = np.mean(t_chunk, axis=1)
+            # 저장해둔 인덱스 맵을 기반으로 AudioSeg 생성
+            # event_token_map에는 Loop 1에서 처리된(시간 범위 내의) 이벤트만 들어있음.
+            for e_idx, indices in sorted(event_token_map.items()):
+                evt = target_events[e_idx]
+                
+                # 스크립트 상의 Start/End로 오디오 자르기
+                t_start_sample = int(evt["start"] * SAMPLE_RATE_TARGET)
+                t_end_sample = int(evt["end"] * SAMPLE_RATE_TARGET)
+                
+                # 범위 체크
+                if t_start_sample < 0: t_start_sample = 0
+                if t_end_sample > len(full_target_audio): t_end_sample = len(full_target_audio)
+                
+                if t_end_sample > t_start_sample:
+                    t_chunk = full_target_audio[t_start_sample:t_end_sample]
+                else:
+                    t_chunk = np.zeros(16000, dtype=np.float32) # 예외 처리: 빈 오디오
 
-            if len(t_chunk) < self.chunk_samples_target:
-                t_chunk = np.pad(t_chunk, (0, self.chunk_samples_target - len(t_chunk)))
-            elif len(t_chunk) > self.chunk_samples_target:
-                t_chunk = t_chunk[: self.chunk_samples_target]
+                target_audios_list.append(AudioSeg(
+                    text_token_idxs=indices,
+                    audio=Audio(waveform=t_chunk, sampling_rate=SAMPLE_RATE_TARGET)
+                ))
+
+        
 
             row_obj = DatasetRow(
-                input=sequence_input_blocks,
-                target_audio=Audio(
-                    waveform=t_chunk,
-                    sampling_rate=t_sr,
-                ),
+                input_sequence=input_sequence,
+                target_audios=target_audios_list,
+                input_audios=input_audios_list,
+                speaker_embedding=speaker_embedding
             )
             out_dataset_rows.append(row_obj)
-
         return {"dataset_row_obj": out_dataset_rows}
-
 
 def duplex_data(
     data_dir: Optional[Path] = None,
     cache_dir: Path = Path("./dataset_duplex"),
+    model_path: str = "Qwen/Qwen3-Omni-30B-A3B-Instruct",
 ) -> Dataset:
     dataset_path = cache_dir
     dataset_path.parent.mkdir(parents=True, exist_ok=True)
@@ -436,7 +437,7 @@ def duplex_data(
     if not dataset_path.exists():
         if data_dir is not None and data_dir.exists():
             print(f">>> Creating dataset from raw data at {data_dir}...")
-            dataset = create_duplex_dataset(data_dir)
+            dataset = create_duplex_dataset(data_dir, model_path) 
             dataset.save_to_disk(str(dataset_path))
         else:
             print(
@@ -505,7 +506,10 @@ def duplex_data(
     train_ds = dataset["train"]
 
     print(">>> Setting up DuplexTransform...")
-    train_ds.set_transform(DuplexTransform(dataset["storage"]))
+    
+    config = DuplexConfig(model_path=model_path)
+    train_ds.set_transform(DuplexTransform(dataset["storage"], config=config))
+ 
 
     return train_ds
 
@@ -782,9 +786,10 @@ def easy_load(
     format: Literal["chat", "raw", "talker_chat", "duplex"] = "talker_chat",
     system_prompt: Optional[str] = None,
     instruction_prompt: Optional[str] = None,
+    model_path: str = "Qwen/Qwen3-Omni-30B-A3B-Instruct",
 ) -> Dataset:
     if format == "duplex":
-        return duplex_data(dataset_path, cache_dir)
+        return duplex_data(dataset_path, cache_dir, model_path=model_path)
 
     if dataset_path is None:
         dataset_path = cache_dir / "sca_comedy_dataset"
