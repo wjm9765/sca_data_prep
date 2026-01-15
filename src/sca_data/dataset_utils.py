@@ -43,7 +43,7 @@ SAMPLE_RATE_TARGET = 24000
 @dataclass
 class DuplexConfig:
     audio_placeholder_token: int = -100 
-    audio_token_ratio: int = 4          # [Modified] 오디오 청크 당 -100 개수 (4개)
+    audio_token_ratio: int = 4          # 오디오 청크 당 -100 개수 (4개)
     text_token_slice_len: int = 2       # 청크당 가져올 텍스트 토큰 수
     silence_token_id: int = 151646     # 묵음 토큰 151646~151651
     max_token_length: int = 40000       
@@ -57,17 +57,14 @@ class Audio:
 
 @dataclass
 class AudioSeg:
-    text_token_idxs: list[int]  # 전체 input_sequence 내에서 해당 오디오에 대응하는 텍스트가 위치한 인덱스들
+    text_token_idxs: list[int]  
     audio: Audio
 
 @dataclass
 class DatasetRow:
-    # LLM에 들어갈 최종 입력 시퀀스 (Audio Placeholder Token + Text Token이 인터리빙된 형태)
     input_sequence: list[int]    
-    # Loss 계산 및 음성 합성을 위한 타겟 오디오 리스트
     target_audios: list[AudioSeg]
     input_audios: list[Audio]
-    # 화자 임베딩 (192차원 등)
     speaker_embedding: np.ndarray
 
 
@@ -127,14 +124,14 @@ def parse_aligned_script(txt_path: Path, tokenizer) -> list[dict]:
 
                     if content in IGNORE_TAGS or not content: continue
                     
-                    # [Optimization] 미리 토크나이징해서 ID 저장
+  
                     token_ids = tokenizer.encode(content, add_special_tokens=False)
 
                     events.append({
                         "start": start_t,
                         "end": end_t,
                         "text": content,
-                        "input_ids": token_ids, # [NEW] 저장됨
+                        "input_ids": token_ids, 
                         "duration": end_t - start_t,
                     })
 
@@ -208,7 +205,7 @@ def create_duplex_dataset(data_dir: Path, model_path: str) -> DatasetDict:
         })
 
     def storage_generator():
-        # [중요] 여기서 시간이 좀 걸리더라도 미리 다 계산합니다.
+     
         for group_key, speakers in tqdm(sessions.items(), desc="Processing Storage & Embeddings"):
             if len(speakers) < 2: continue
             pairs = [(speakers[0], speakers[1]), (speakers[1], speakers[0])]
@@ -218,8 +215,6 @@ def create_duplex_dataset(data_dir: Path, model_path: str) -> DatasetDict:
                 
                 events = parse_aligned_script(target_info["txt_path"], tokenizer)
                 
-                # [핵심 수정] 기존 extract_speaker_embedding 함수 사용
-                # utils.py에 정의된 대로 bytes를 넘김
                 try:
                     spk_emb = extract_speaker_embedding(t_bytes, sample_rate=24000)
                 except Exception as e:
@@ -231,7 +226,7 @@ def create_duplex_dataset(data_dir: Path, model_path: str) -> DatasetDict:
                     "user_audio": {"bytes": u_bytes, "path": None},
                     "target_audio": {"bytes": t_bytes, "path": None},
                     "events_json": json.dumps(events),
-                    "speaker_embedding": spk_emb, # 저장!
+                    "speaker_embedding": spk_emb, 
                 }
 
     def train_generator():
@@ -249,7 +244,6 @@ def create_duplex_dataset(data_dir: Path, model_path: str) -> DatasetDict:
                     "end_sample": max_len,
                 }
     
-    # [Feature 수정] speaker_embedding 필드 추가
     storage_features = Features({
         "session_id": Value("string"), 
         "user_audio": HFAudio(decode=False),
@@ -277,14 +271,12 @@ class DuplexTransform:
         self.chunk_samples_user = int(CHUNK_DURATION * SAMPLE_RATE_USER)
         self.chunk_samples_target = int(CHUNK_DURATION * SAMPLE_RATE_TARGET)
 
-        # Tokenizer는 Padding ID 확인 등을 위해 로드는 필요함 (토크나이징은 안 함)
         print(f">>> Loading Processor from {config.model_path} for Pad ID check...")
         try:
             self.processor = Qwen3OmniMoeProcessor.from_pretrained(config.model_path, trust_remote_code=True)
             self.tokenizer = self.processor.tokenizer
             self.pad_token_id = self.tokenizer.pad_token_id if self.tokenizer.pad_token_id is not None else config.silence_token_id
             
-            # [NEW] 시스템 프롬프트 토크나이징 (한번만)
             self.system_prompt_ids = self.tokenizer.encode(DEFAULT_SYSTEM_PROMPT, add_special_tokens=False)
             
         except Exception as e:
@@ -309,14 +301,10 @@ class DuplexTransform:
             input_sequence = list(self.system_prompt_ids)
             input_audios_list: list[Audio] = []
             
-            # Key: event_index, Value: list of indices in input_sequence
             event_token_map: dict[int, list[int]] = {}
             
-            # [핵심] 텍스트 토큰 대기열 (Queue)
-            # 구조: (token_id, event_index) 튜플을 저장
             token_queue = []
             
-            # 현재 처리 중인 이벤트 포인터
             next_event_idx = 0
             
             with sf.SoundFile(io.BytesIO(u_bytes)) as f:
@@ -326,9 +314,6 @@ class DuplexTransform:
             num_chunks = len(u_full) // self.chunk_samples_user
             
             for c in range(num_chunks):
-                # =========================================================
-                # [Step A] User Audio (4 tokens) - 시계 역할
-                # =========================================================
                 c_start_sec = c * CHUNK_DURATION
                 c_end_sec = c_start_sec + CHUNK_DURATION
                 
@@ -339,28 +324,17 @@ class DuplexTransform:
                 input_audios_list.append(Audio(waveform=u_chunk, sampling_rate=SAMPLE_RATE_USER))
                 input_sequence.extend([self.config.audio_placeholder_token] * self.config.audio_token_ratio)
 
-                # =========================================================
-                # [Step B] Event Fetching (대기열 채우기)
-                # =========================================================
-                # 현재 시간(c_end_sec) 이전에 시작된 이벤트가 있다면 큐에 추가
-                # (이미 큐에 넣은 이벤트는 next_event_idx로 건너뜀)
+                #using queue to track text tokens
                 while next_event_idx < len(target_events):
                     evt = target_events[next_event_idx]
                     
-                    # 이벤트 시작 시간이 현재 청크 범위 안(또는 이전)에 들어왔다면 트리거
-                    # 약간의 오차를 허용하기 위해 <= c_end_sec 사용
                     if evt["start"] < c_end_sec:
                         if "input_ids" in evt:
-                            # (토큰ID, 이벤트인덱스) 형태로 저장 -> 나중에 오디오 자를 때 씀
                             for tid in evt["input_ids"]:
                                 token_queue.append((tid, next_event_idx))
                         next_event_idx += 1
                     else:
-                        # 아직 시간이 안 된 이벤트면 중단
                         break
-                # =========================================================
-                # [Step C] Text Token Emission (가변 길이 로직)
-                # =========================================================
                 # Case 1: 큐가 비었음 -> [Silence] (1개)
                 # Case 2: 큐에 1개 남음 -> [Token, Pad] (2개)
                 # Case 3: 큐에 2개 이상 -> [Token, Token] (2개)
@@ -390,7 +364,6 @@ class DuplexTransform:
                         emit_tokens.append(tid)
                         emit_event_idxs.append(e_idx)
 
-                # 시퀀스 추가 및 인덱스 매핑
                 start_pos = len(input_sequence)
                 input_sequence.extend(emit_tokens)
                 
@@ -404,7 +377,6 @@ class DuplexTransform:
                     print(f"[Warning] Truncating sequence at {len(input_sequence)} tokens.")
                     break
 
-            # --- [Step D] Target Audio Segments 생성 ---
             target_audios_list: list[AudioSeg] = []
             
             with sf.SoundFile(io.BytesIO(t_bytes_24k)) as f:
@@ -458,11 +430,11 @@ def duplex_data(
             print(
                 ">>> Raw data not provided. Fetching config from GitHub for Duplex..."
             )
-            url_url = "https://raw.githubusercontent.com/riverfog7/sca_data_prep/refs/heads/main/.hf_dataset_url_duplex"
-            hash_url = "https://raw.githubusercontent.com/riverfog7/sca_data_prep/refs/heads/main/.hf_dataset_md5_duplex"
+            #url_url = "https://raw.githubusercontent.com/riverfog7/sca_data_prep/refs/heads/main/.hf_dataset_url_duplex"
+            #hash_url = "https://raw.githubusercontent.com/riverfog7/sca_data_prep/refs/heads/main/.hf_dataset_md5_duplex"
 
-            # url_url = "https://raw.githubusercontent.com/wjm9765/sca_data_prep/refs/heads/main/.hf_dataset_url_duplex"
-            # hash_url = "https://raw.githubusercontent.com/wjm9765/sca_data_prep/refs/heads/main/.hf_dataset_md5_duplex"
+            url_url = "https://raw.githubusercontent.com/wjm9765/sca_data_prep/refs/heads/main/.hf_dataset_url_duplex"
+            hash_url = "https://raw.githubusercontent.com/wjm9765/sca_data_prep/refs/heads/main/.hf_dataset_md5_duplex"
 
             try:
                 print(f"Reading URL from {url_url}...")
