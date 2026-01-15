@@ -32,7 +32,7 @@ except ImportError:
 def main():
     print(">>> [1/3] 데이터셋 로드 중 (Format: Duplex)...")
     try:
-        # 데이터셋 로드 (캐시된 데이터가 있으면 자동으로 가져옴)
+        # 데이터셋 로드
         dataset = easy_load(format="duplex")
         print(f"✅ 데이터셋 로드 완료. 총 샘플 수: {len(dataset)}")
     except Exception as e:
@@ -58,9 +58,8 @@ def main():
         
         # 1. 데이터 Row 가져오기
         row = dataset[i]["dataset_row_obj"]
-        session_id = dataset[i]["session_id"]
         
-        print(f"   Processing Sample {i} (Session: {session_id})...")
+        print(f"   Processing Sample {i}...")
 
         # ---------------------------------------------------------
         # (A) Target Audio 복원 (이어 붙이기)
@@ -72,7 +71,6 @@ def main():
         
         if target_segments:
             # 끊겨있는 세그먼트들을 하나로 이어 붙여서 듣기 편하게 만듦
-            # (실제 학습에선 끊겨 있지만, 사람이 듣기 위해 concat)
             full_target_wav = np.concatenate(target_segments)
             
             wav_filename = OUTPUT_DIR / f"sample_{i}_target.wav"
@@ -84,16 +82,24 @@ def main():
         # (B) Text Transcript 복원 (전체 시퀀스 디코딩)
         # ---------------------------------------------------------
         if tokenizer:
-            full_text = tokenizer.decode(row.input_sequence)
+            # [수정됨] -100 (Audio Placeholder) 토큰 제거 후 디코딩
+            # 이유: 토크나이저는 음수(-100)를 처리하지 못해 OverflowError 발생
+            valid_ids = [tid for tid in row.input_sequence if tid != -100]
             
+            try:
+                full_text = tokenizer.decode(valid_ids)
+            except Exception as e:
+                full_text = f"[Decoding Error]: {e}"
+
             txt_filename = OUTPUT_DIR / f"sample_{i}_transcript.txt"
             with open(txt_filename, "w", encoding="utf-8") as f:
-                f.write(f"Session ID: {session_id}\n")
+                f.write(f"Sample Index: {i}\n")
                 f.write(f"Total Sequence Length: {len(row.input_sequence)}\n")
+                f.write(f"Valid Text Tokens: {len(valid_ids)}\n")
                 f.write("=" * 80 + "\n\n")
                 f.write(full_text)
                 f.write("\n\n" + "=" * 80 + "\n")
-                f.write("[Note] <|audio_bos|>...<|audio_eos|> 태그나 특수 토큰이 보일 수 있습니다.\n")
+                f.write("[Note] 오디오(-100) 구간은 텍스트에서 생략되었습니다.\n")
 
     print(f"\n🎉 모든 작업 완료! 결과물은 '{OUTPUT_DIR}' 폴더를 확인하세요.")
 

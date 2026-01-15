@@ -275,8 +275,10 @@ class DuplexTransform:
         try:
             self.processor = Qwen3OmniMoeProcessor.from_pretrained(config.model_path, trust_remote_code=True)
             self.tokenizer = self.processor.tokenizer
-            self.pad_token_id = self.tokenizer.pad_token_id if self.tokenizer.pad_token_id is not None else config.silence_token_id
-            
+            #self.pad_token_id = self.tokenizer.pad_token_id if self.tokenizer.pad_token_id is not None else config.silence_token_id
+            #pad_toke equals eos token number so we use silence token as pad token 
+            self.pad_token_id = self.config.silence_token_id  # 151646
+
             self.system_prompt_ids = self.tokenizer.encode(DEFAULT_SYSTEM_PROMPT, add_special_tokens=False)
             
         except Exception as e:
