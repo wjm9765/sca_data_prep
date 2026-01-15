@@ -45,7 +45,7 @@ class DuplexConfig:
     audio_placeholder_token: int = -100 
     audio_token_ratio: int = 4          # [Modified] 오디오 청크 당 -100 개수 (4개)
     text_token_slice_len: int = 2       # 청크당 가져올 텍스트 토큰 수
-    silence_token_id: int = 151643      # 묵음 토큰
+    silence_token_id: int = 151646     # 묵음 토큰 151646~151651
     max_token_length: int = 40000       
     model_path: str = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
 
@@ -285,7 +285,6 @@ class DuplexTransform:
     def __call__(self, batch):
         out_dataset_rows = []
         batch_ids = batch["session_id"]
-        # batch_starts = batch["start_sample"] # 이제 무조건 0이므로 안 씀
         
         for i in range(len(batch_ids)):
             sess_id = batch_ids[i]
@@ -301,29 +300,31 @@ class DuplexTransform:
             except:
                 speaker_embedding = np.zeros(SPEAKER_EMBEDDING_DIM, dtype=np.float32)
 
-            # 1. 시퀀스 초기화 (시스템 프롬프트)
             input_sequence = list(self.system_prompt_ids)
             input_audios_list: list[Audio] = []
             
             # Key: event_index, Value: list of indices in input_sequence
             event_token_map: dict[int, list[int]] = {}
-
-            last_matched_event_idx = -1 
-            current_token_offset = 0
             
-            # [수정됨] 파일 전체 로드
+            # [핵심] 텍스트 토큰 대기열 (Queue)
+            # 구조: (token_id, event_index) 튜플을 저장
+            token_queue = []
+            
+            # 현재 처리 중인 이벤트 포인터
+            next_event_idx = 0
+            
             with sf.SoundFile(io.BytesIO(u_bytes)) as f:
                 u_full = f.read(dtype="float32")
             if u_full.ndim > 1: u_full = np.mean(u_full, axis=1)
 
-            # 전체 길이에 대해 청크 반복
             num_chunks = len(u_full) // self.chunk_samples_user
             
             for c in range(num_chunks):
-                # --- [Step A] User Audio (4 tokens) ---
+                # =========================================================
+                # [Step A] User Audio (4 tokens) - 시계 역할
+                # =========================================================
                 c_start_sec = c * CHUNK_DURATION
                 c_end_sec = c_start_sec + CHUNK_DURATION
-                c_center_sec = (c_start_sec + c_end_sec) / 2
                 
                 idx_s = c * self.chunk_samples_user
                 idx_e = idx_s + self.chunk_samples_user
@@ -332,63 +333,72 @@ class DuplexTransform:
                 input_audios_list.append(Audio(waveform=u_chunk, sampling_rate=SAMPLE_RATE_USER))
                 input_sequence.extend([self.config.audio_placeholder_token] * self.config.audio_token_ratio)
 
-                # --- [Step B] Text/Silence (1 or 2 tokens) ---
-                matched_event_idx = -1
-                matched_event = None
-                for e_idx, evt in enumerate(target_events):
-                    if evt["start"] <= c_center_sec < evt["end"]:
-                        matched_event = evt
-                        matched_event_idx = e_idx
-                        break
-                
-                # 이벤트가 바뀌면 오프셋 리셋
-                if matched_event_idx != last_matched_event_idx:
-                    current_token_offset = 0
-                    last_matched_event_idx = matched_event_idx
-                
-                current_text_ids = []
-                
-                # 1. 매칭된 이벤트(텍스트)가 있는 경우
-                if matched_event and "input_ids" in matched_event:
-                    full_ids = matched_event["input_ids"]
+                # =========================================================
+                # [Step B] Event Fetching (대기열 채우기)
+                # =========================================================
+                # 현재 시간(c_end_sec) 이전에 시작된 이벤트가 있다면 큐에 추가
+                # (이미 큐에 넣은 이벤트는 next_event_idx로 건너뜀)
+                while next_event_idx < len(target_events):
+                    evt = target_events[next_event_idx]
                     
-                    start_idx = current_token_offset
-                    end_idx = start_idx + self.config.text_token_slice_len # 2
-                    sliced = full_ids[start_idx:end_idx]
-                    
-                    if len(sliced) == 2:
-                        current_text_ids = sliced
-                    elif len(sliced) == 1:
-                        # 하나 남았으면 그거 + 침묵
-                        current_text_ids = [sliced[0], self.config.silence_token_id]
+                    # 이벤트 시작 시간이 현재 청크 범위 안(또는 이전)에 들어왔다면 트리거
+                    # 약간의 오차를 허용하기 위해 <= c_end_sec 사용
+                    if evt["start"] < c_end_sec:
+                        if "input_ids" in evt:
+                            # (토큰ID, 이벤트인덱스) 형태로 저장 -> 나중에 오디오 자를 때 씀
+                            for tid in evt["input_ids"]:
+                                token_queue.append((tid, next_event_idx))
+                        next_event_idx += 1
                     else:
-                        # 텍스트 다 썼으면 침묵
-                        current_text_ids = [self.config.silence_token_id]
-
-                    current_token_offset += self.config.text_token_slice_len
-                    
-                    # Target Audio 생성을 위해 인덱스 저장
-                    if matched_event_idx not in event_token_map:
-                        event_token_map[matched_event_idx] = []
-                    
-                    # 현재 추가될 텍스트 토큰들의 위치 인덱스 저장
-                    start_pos = len(input_sequence)
-                    indices = list(range(start_pos, start_pos + len(current_text_ids)))
-                    event_token_map[matched_event_idx].extend(indices)
-
-                # 2. 매칭된 이벤트가 없는 경우 (침묵)
-                else:
-                    # 침묵은 1개만 넣기로 함
-                    current_text_ids = [self.config.silence_token_id]
-
-                input_sequence.extend(current_text_ids)
+                        # 아직 시간이 안 된 이벤트면 중단
+                        break
+                # =========================================================
+                # [Step C] Text Token Emission (가변 길이 로직)
+                # =========================================================
+                # Case 1: 큐가 비었음 -> [Silence] (1개)
+                # Case 2: 큐에 1개 남음 -> [Token, Pad] (2개)
+                # Case 3: 큐에 2개 이상 -> [Token, Token] (2개)
                 
-                # 4만 토큰 안전장치 (파일 전체를 하다보니 넘을 수도 있음)
+                emit_tokens = []
+                emit_event_idxs = []
+
+                if not token_queue:
+                    # 1. 큐가 비었음 -> 침묵 1개
+                    emit_tokens.append(self.config.silence_token_id)
+                    emit_event_idxs.append(None)
+                
+                elif len(token_queue) == 1:
+                    # 2. 큐에 1개 남음 -> 텍스트 1개 + Pad 1개
+                    tid, e_idx = token_queue.pop(0)
+                    emit_tokens.append(tid)
+                    emit_event_idxs.append(e_idx)
+                    
+                    # Pad 추가
+                    emit_tokens.append(self.pad_token_id)
+                    emit_event_idxs.append(None)
+                    
+                else:
+                    # 3. 큐에 2개 이상 -> 텍스트 2개
+                    for _ in range(2):
+                        tid, e_idx = token_queue.pop(0)
+                        emit_tokens.append(tid)
+                        emit_event_idxs.append(e_idx)
+
+                # 시퀀스 추가 및 인덱스 매핑
+                start_pos = len(input_sequence)
+                input_sequence.extend(emit_tokens)
+                
+                for k, e_idx in enumerate(emit_event_idxs):
+                    if e_idx is not None:
+                        if e_idx not in event_token_map:
+                            event_token_map[e_idx] = []
+                        event_token_map[e_idx].append(start_pos + k)
+
                 if len(input_sequence) > self.config.max_token_length:
                     print(f"[Warning] Truncating sequence at {len(input_sequence)} tokens.")
                     break
 
-            # --- [Step C] Target Audio Segments 생성 ---
+            # --- [Step D] Target Audio Segments 생성 ---
             target_audios_list: list[AudioSeg] = []
             
             with sf.SoundFile(io.BytesIO(t_bytes_24k)) as f:
@@ -409,13 +419,11 @@ class DuplexTransform:
                 else:
                     t_chunk = np.zeros(16000, dtype=np.float32)
 
-                # 텍스트 토큰 위치 정보와 오디오 매핑
                 target_audios_list.append(AudioSeg(
                     text_token_idxs=indices,
                     audio=Audio(waveform=t_chunk, sampling_rate=SAMPLE_RATE_TARGET)
                 ))
 
-            # 최종 Row 생성
             row_obj = DatasetRow(
                 input_sequence=input_sequence,
                 target_audios=target_audios_list,
