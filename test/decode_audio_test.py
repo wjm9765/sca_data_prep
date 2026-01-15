@@ -5,7 +5,6 @@ import os
 import numpy as np
 import soundfile as sf
 from pathlib import Path
-from tqdm import tqdm
 from transformers import Qwen3OmniMoeProcessor
 
 # -------------------------------------------------------------------------
@@ -29,6 +28,7 @@ except ImportError:
         sys.path.append(src_path)
     from sca_data.dataset_utils import easy_load
 
+
 def main():
     print(">>> [1/3] 데이터셋 로드 중 (Format: Duplex)...")
     try:
@@ -42,8 +42,7 @@ def main():
     print(">>> [2/3] 토크나이저 로드 중 (텍스트 디코딩용)...")
     try:
         processor = Qwen3OmniMoeProcessor.from_pretrained(
-            "Qwen/Qwen3-Omni-30B-A3B-Instruct", 
-            trust_remote_code=True
+            "Qwen/Qwen3-Omni-30B-A3B-Instruct", trust_remote_code=True
         )
         tokenizer = processor.tokenizer
     except Exception as e:
@@ -55,10 +54,9 @@ def main():
 
     # 지정한 개수만큼 반복
     for i in range(min(NUM_SAMPLES_TO_SAVE, len(dataset))):
-        
         # 1. 데이터 Row 가져오기
         row = dataset[i]["dataset_row_obj"]
-        
+
         print(f"   Processing Sample {i}...")
 
         # ---------------------------------------------------------
@@ -68,13 +66,13 @@ def main():
         for seg in row.target_audios:
             # seg.audio.waveform은 numpy array
             target_segments.append(seg.audio.waveform)
-        
+
         if target_segments:
             # 끊겨있는 세그먼트들을 하나로 이어 붙여서 듣기 편하게 만듦
             full_target_wav = np.concatenate(target_segments)
-            
+
             wav_filename = OUTPUT_DIR / f"sample_{i}_target.wav"
-            sf.write(wav_filename, full_target_wav, 24000) # Target은 24kHz
+            sf.write(wav_filename, full_target_wav, 24000)  # Target은 24kHz
         else:
             print(f"      [Warning] Sample {i} has no target audio segments.")
 
@@ -85,7 +83,7 @@ def main():
             # [수정됨] -100 (Audio Placeholder) 토큰 제거 후 디코딩
             # 이유: 토크나이저는 음수(-100)를 처리하지 못해 OverflowError 발생
             valid_ids = [tid for tid in row.input_sequence if tid != -100]
-            
+
             try:
                 full_text = tokenizer.decode(valid_ids)
             except Exception as e:
@@ -102,6 +100,7 @@ def main():
                 f.write("[Note] 오디오(-100) 구간은 텍스트에서 생략되었습니다.\n")
 
     print(f"\n🎉 모든 작업 완료! 결과물은 '{OUTPUT_DIR}' 폴더를 확인하세요.")
+
 
 if __name__ == "__main__":
     main()

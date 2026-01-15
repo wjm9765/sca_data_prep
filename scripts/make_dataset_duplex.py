@@ -12,7 +12,7 @@ try:
     # dataset_utils.py에서 함수 가져오기
     from sca_data.dataset_utils import parse_aligned_script, duplex_data
 except ImportError as e:
-    print(f"[Error] Failed to import 'sca_data'.")
+    print("[Error] Failed to import 'sca_data'.")
     print(f"Debug info - sys.path: {sys.path}")
     print(f"Error details: {e}")
     sys.exit(1)
@@ -27,7 +27,7 @@ DEFAULT_MODEL_PATH = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
 
 def save_parsed_scripts(data_dir: Path, output_dir: Path, model_path: str):
     """
-    [Mode: Script] 
+    [Mode: Script]
     TXT 파일을 파싱하여 JSON으로 저장 (토크나이징 확인용)
     """
     txt_dir = data_dir / "TXT"
@@ -36,11 +36,13 @@ def save_parsed_scripts(data_dir: Path, output_dir: Path, model_path: str):
         raise FileNotFoundError(f"TXT folder not found in {data_dir}")
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    
+
     print(f">>> [Mode: Script] Loading Tokenizer from {model_path}...")
     try:
-        processor = Qwen3OmniMoeProcessor.from_pretrained(model_path, trust_remote_code=True)
-        tokenizer = processor.tokenizer
+        processor = Qwen3OmniMoeProcessor.from_pretrained(
+            model_path, trust_remote_code=True
+        )
+        tokenizer = processor.tokenizer  # type:ignore
     except Exception as e:
         print(f"[Error] Failed to load model/tokenizer: {e}")
         sys.exit(1)
@@ -75,7 +77,9 @@ def build_hf_dataset(data_dir: Path, model_path: str, output_dir: Path):
     print(f">>> Model Path: {model_path}")
 
     if not (data_dir / "WAV").exists() or not (data_dir / "TXT").exists():
-        raise FileNotFoundError(f"Input directory must contain 'WAV' and 'TXT' folders inside {data_dir}")
+        raise FileNotFoundError(
+            f"Input directory must contain 'WAV' and 'TXT' folders inside {data_dir}"
+        )
 
     # duplex_data 함수 호출 (dataset_utils.py)
     # cache_dir에 결과가 저장됨
@@ -108,7 +112,7 @@ def main():
         default=None,  # None이면 아래에서 자동 할당
         help="Output directory (Optional)",
     )
-    
+
     parser.add_argument(
         "--model_path",
         type=str,
@@ -119,7 +123,7 @@ def main():
     args = parser.parse_args()
 
     input_path = Path(args.input)
-    
+
     if args.output:
         output_path = Path(args.output)
     else:

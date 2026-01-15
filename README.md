@@ -51,6 +51,17 @@ We constructed this dataset to modify the existing half-duplex model into a full
   * **Input ($x$):** 16kHz (User/Environment history)
   * **Target ($y$):** 24kHz (Comedian response)
 
+This structure allows the model to process user audio in real-time while generating text tokens step-by-step.
+
+### Base Model & Tokenizer
+- **Default Model:** `Qwen/Qwen3-Omni-30B-A3B-Instruct`
+- The script automatically loads the tokenizer from this model path.
+- **Customization:** You can switch to a different model by changing the `model_path` variable in `DuplexConfig` or passing the `--model_path` argument in the script.
+
+### Silence & Padding Strategy
+- **Silence Token:** We utilize a specific token ID (Default: `151646`, originally `<|object_ref_start|>`) to explicitly train the model to **"listen"** (remain silent) while the user is speaking.
+- **Padding:** The same Silence Token is used for padding to ensure the model learns to stay quiet when no text generation is required.
+- **Configurable:** This token ID is not mandatory; you can modify `silence_token_id` in `DuplexConfig` (src/sca_data/dataset_utils.py) to use a different special token if needed.
 
 > **Note:** If you want to verify the implementation details yourself instead of using the pre-processed dataset, you must download the raw data and place it in the root directory.
 

@@ -1,6 +1,5 @@
 import io
 import json
-import math
 import re
 import shutil
 import tarfile
@@ -14,9 +13,8 @@ import soundfile as sf
 import torchaudio
 from datasets import DatasetDict, Dataset, load_from_disk
 from datasets import Features, Value, Audio as HFAudio, Sequence
-from pydantic import BaseModel
 from tqdm import tqdm
-from dataclasses import dataclass #dataclass annotation 추가
+from dataclasses import dataclass  # dataclass annotation 추가
 
 from transformers import Qwen3OmniMoeProcessor
 
@@ -40,13 +38,14 @@ CHUNK_DURATION = 0.32
 SAMPLE_RATE_USER = 16000
 SAMPLE_RATE_TARGET = 24000
 
+
 @dataclass
 class DuplexConfig:
-    audio_placeholder_token: int = -100 
-    audio_token_ratio: int = 4          # 오디오 청크 당 -100 개수 (4개)
-    text_token_slice_len: int = 2       # 청크당 가져올 텍스트 토큰 수
-    silence_token_id: int = 151646     # 묵음 토큰 151646~151651
-    max_token_length: int = 40000       
+    audio_placeholder_token: int = -100
+    audio_token_ratio: int = 4  # 오디오 청크 당 -100 개수 (4개)
+    text_token_slice_len: int = 2  # 청크당 가져올 텍스트 토큰 수
+    silence_token_id: int = 151646  # 묵음 토큰 151646~151651
+    max_token_length: int = 40000
     model_path: str = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
 
 
@@ -55,14 +54,16 @@ class Audio:
     waveform: np.ndarray
     sampling_rate: int
 
+
 @dataclass
 class AudioSeg:
-    text_token_idxs: list[int]  
+    text_token_idxs: list[int]
     audio: Audio
+
 
 @dataclass
 class DatasetRow:
-    input_sequence: list[int]    
+    input_sequence: list[int]
     target_audios: list[AudioSeg]
     input_audios: list[Audio]
     speaker_embedding: np.ndarray
@@ -114,26 +115,28 @@ def parse_aligned_script(txt_path: Path, tokenizer) -> list[dict]:
         "[ENS]",  # 환경 소음
     }
     with open(txt_path, "r", encoding="utf-8") as f:
-            for line in f:
-                match = pattern.search(line)
-                if match:
-                    start, end, content = match.groups()
-                    start_t = float(start)
-                    end_t = float(end)
-                    content = content.strip()
+        for line in f:
+            match = pattern.search(line)
+            if match:
+                start, end, content = match.groups()
+                start_t = float(start)
+                end_t = float(end)
+                content = content.strip()
 
-                    if content in IGNORE_TAGS or not content: continue
-                    
-  
-                    token_ids = tokenizer.encode(content, add_special_tokens=False)
+                if content in IGNORE_TAGS or not content:
+                    continue
 
-                    events.append({
+                token_ids = tokenizer.encode(content, add_special_tokens=False)
+
+                events.append(
+                    {
                         "start": start_t,
                         "end": end_t,
                         "text": content,
-                        "input_ids": token_ids, 
+                        "input_ids": token_ids,
                         "duration": end_t - start_t,
-                    })
+                    }
+                )
 
     """
     {
@@ -156,8 +159,6 @@ def parse_aligned_script(txt_path: Path, tokenizer) -> list[dict]:
         .......
     """
     return sorted(events, key=lambda x: x["start"])
-
-
 
 
 def ensure_mono_and_length(audio_chunk: np.ndarray, target_length: int) -> np.ndarray:
@@ -186,39 +187,52 @@ def create_duplex_dataset(data_dir: Path, model_path: str) -> DatasetDict:
     if not wav_dir_24k.exists() or not list(wav_dir_24k.glob("*.wav")):
         print(">>> WAV_24 folder not found. Running pre-processing first...")
         preprocess_dataset_to_24k(data_dir)
-    
+
     print(f">>> Loading Tokenizer from {model_path} for pre-processing...")
-    processor = Qwen3OmniMoeProcessor.from_pretrained(model_path, trust_remote_code=True)
-    tokenizer = processor.tokenizer
+    processor = Qwen3OmniMoeProcessor.from_pretrained(
+        model_path, trust_remote_code=True
+    )
+    tokenizer = processor.tokenizer  # type:ignore
 
     sessions = {}
     for wav_file in wav_dir_16k.glob("*.wav"):
         parts = wav_file.stem.split("_")
-        if len(parts) < 2: continue
+        if len(parts) < 2:
+            continue
         group_key = "_".join(parts[:-1])
         spk_id = parts[-1]
-        if group_key not in sessions: sessions[group_key] = []
-        sessions[group_key].append({
-            "spk_id": spk_id, "wav_path_16k": wav_file,
-            "wav_path_24k": wav_dir_24k / wav_file.name,
-            "txt_path": txt_dir / f"{wav_file.stem}.txt",
-        })
+        if group_key not in sessions:
+            sessions[group_key] = []
+        sessions[group_key].append(
+            {
+                "spk_id": spk_id,
+                "wav_path_16k": wav_file,
+                "wav_path_24k": wav_dir_24k / wav_file.name,
+                "txt_path": txt_dir / f"{wav_file.stem}.txt",
+            }
+        )
 
     def storage_generator():
-     
-        for group_key, speakers in tqdm(sessions.items(), desc="Processing Storage & Embeddings"):
-            if len(speakers) < 2: continue
+        for group_key, speakers in tqdm(
+            sessions.items(), desc="Processing Storage & Embeddings"
+        ):
+            if len(speakers) < 2:
+                continue
             pairs = [(speakers[0], speakers[1]), (speakers[1], speakers[0])]
             for user_info, target_info in pairs:
-                with open(user_info["wav_path_16k"], "rb") as f: u_bytes = f.read()
-                with open(target_info["wav_path_24k"], "rb") as f: t_bytes = f.read()
-                
+                with open(user_info["wav_path_16k"], "rb") as f:
+                    u_bytes = f.read()
+                with open(target_info["wav_path_24k"], "rb") as f:
+                    t_bytes = f.read()
+
                 events = parse_aligned_script(target_info["txt_path"], tokenizer)
-                
+
                 try:
                     spk_emb = extract_speaker_embedding(t_bytes, sample_rate=24000)
                 except Exception as e:
-                    print(f"[Warning] Failed to extract embedding for {user_info['wav_path_16k']}: {e}")
+                    print(
+                        f"[Warning] Failed to extract embedding for {user_info['wav_path_16k']}: {e}"
+                    )
                     spk_emb = np.zeros(SPEAKER_EMBEDDING_DIM, dtype=np.float32)
 
                 yield {
@@ -226,42 +240,50 @@ def create_duplex_dataset(data_dir: Path, model_path: str) -> DatasetDict:
                     "user_audio": {"bytes": u_bytes, "path": None},
                     "target_audio": {"bytes": t_bytes, "path": None},
                     "events_json": json.dumps(events),
-                    "speaker_embedding": spk_emb, 
+                    "speaker_embedding": spk_emb,
                 }
 
     def train_generator():
         for group_key, speakers in sessions.items():
-            if len(speakers) < 2: continue
+            if len(speakers) < 2:
+                continue
             pairs = [(speakers[0], speakers[1]), (speakers[1], speakers[0])]
             for user_info, target_info in pairs:
                 sess_id = f"{group_key}_{target_info['spk_id']}"
                 with sf.SoundFile(user_info["wav_path_16k"]) as f:
                     max_len = len(f)
                 yield {
-                    "session_id": sess_id, 
+                    "session_id": sess_id,
                     "seq_id": 0,
-                    "start_sample": 0, 
+                    "start_sample": 0,
                     "end_sample": max_len,
                 }
-    
-    storage_features = Features({
-        "session_id": Value("string"), 
-        "user_audio": HFAudio(decode=False),
-        "target_audio": HFAudio(decode=False), 
-        "events_json": Value("string"),
-        "speaker_embedding": Sequence(Value("float32"), length=SPEAKER_EMBEDDING_DIM) # 192차원
-    })
-    
-    train_features = Features({
-        "session_id": Value("string"), 
-        "seq_id": Value("int32"),
-        "start_sample": Value("int64"), 
-        "end_sample": Value("int64"),
-    })
-    
+
+    storage_features = Features(
+        {
+            "session_id": Value("string"),
+            "user_audio": HFAudio(decode=False),
+            "target_audio": HFAudio(decode=False),
+            "events_json": Value("string"),
+            "speaker_embedding": Sequence(
+                Value("float32"), length=SPEAKER_EMBEDDING_DIM
+            ),  # 192차원
+        }
+    )
+
+    train_features = Features(
+        {
+            "session_id": Value("string"),
+            "seq_id": Value("int32"),
+            "start_sample": Value("int64"),
+            "end_sample": Value("int64"),
+        }
+    )
+
     ds_storage = Dataset.from_generator(storage_generator, features=storage_features)
     ds_train = Dataset.from_generator(train_generator, features=train_features)
     return DatasetDict({"storage": ds_storage, "train": ds_train})
+
 
 class DuplexTransform:
     def __init__(self, storage_dataset, config: DuplexConfig):
@@ -273,14 +295,18 @@ class DuplexTransform:
 
         print(f">>> Loading Processor from {config.model_path} for Pad ID check...")
         try:
-            self.processor = Qwen3OmniMoeProcessor.from_pretrained(config.model_path, trust_remote_code=True)
-            self.tokenizer = self.processor.tokenizer
-            #self.pad_token_id = self.tokenizer.pad_token_id if self.tokenizer.pad_token_id is not None else config.silence_token_id
-            #pad_toke equals eos token number so we use silence token as pad token 
+            self.processor = Qwen3OmniMoeProcessor.from_pretrained(
+                config.model_path, trust_remote_code=True
+            )
+            self.tokenizer = self.processor.tokenizer  # type : ignore
+            # self.pad_token_id = self.tokenizer.pad_token_id if self.toke izer.pad_token_id is not None else config.silence_token_id
+            # pad_toke equals eos token number so we use silence token as pad token
             self.pad_token_id = self.config.silence_token_id  # 151646
 
-            self.system_prompt_ids = self.tokenizer.encode(DEFAULT_SYSTEM_PROMPT, add_special_tokens=False)
-            
+            self.system_prompt_ids = self.tokenizer.encode(
+                DEFAULT_SYSTEM_PROMPT, add_special_tokens=False
+            )
+
         except Exception as e:
             print(f"[Warning] Failed to load tokenizer: {e}")
             raise e
@@ -288,7 +314,7 @@ class DuplexTransform:
     def __call__(self, batch):
         out_dataset_rows = []
         batch_ids = batch["session_id"]
-        
+
         for i in range(len(batch_ids)):
             sess_id = batch_ids[i]
             store_idx = self.id_to_idx[sess_id]
@@ -298,38 +324,48 @@ class DuplexTransform:
             t_bytes_24k = store_row["target_audio"]["bytes"]
             target_events = json.loads(store_row["events_json"])
 
-            speaker_embedding = np.array(store_row["speaker_embedding"], dtype=np.float32)
+            speaker_embedding = np.array(
+                store_row["speaker_embedding"], dtype=np.float32
+            )
 
             input_sequence = list(self.system_prompt_ids)
             input_audios_list: list[Audio] = []
-            
+
             event_token_map: dict[int, list[int]] = {}
-            
+
             token_queue = []
-            
+
             next_event_idx = 0
-            
+
             with sf.SoundFile(io.BytesIO(u_bytes)) as f:
                 u_full = f.read(dtype="float32")
-            if u_full.ndim > 1: u_full = np.mean(u_full, axis=1)
+            if u_full.ndim > 1:
+                u_full = np.mean(u_full, axis=1)
 
             num_chunks = len(u_full) // self.chunk_samples_user
-            
+
             for c in range(num_chunks):
                 c_start_sec = c * CHUNK_DURATION
                 c_end_sec = c_start_sec + CHUNK_DURATION
-                
+
                 idx_s = c * self.chunk_samples_user
                 idx_e = idx_s + self.chunk_samples_user
-                u_chunk = ensure_mono_and_length(u_full[idx_s:idx_e], self.chunk_samples_user)
-                
-                input_audios_list.append(Audio(waveform=u_chunk, sampling_rate=SAMPLE_RATE_USER))
-                input_sequence.extend([self.config.audio_placeholder_token] * self.config.audio_token_ratio)
+                u_chunk = ensure_mono_and_length(
+                    u_full[idx_s:idx_e], self.chunk_samples_user
+                )
 
-                #using queue to track text tokens
+                input_audios_list.append(
+                    Audio(waveform=u_chunk, sampling_rate=SAMPLE_RATE_USER)
+                )
+                input_sequence.extend(
+                    [self.config.audio_placeholder_token]
+                    * self.config.audio_token_ratio
+                )
+
+                # using queue to track text tokens
                 while next_event_idx < len(target_events):
                     evt = target_events[next_event_idx]
-                    
+
                     if evt["start"] < c_end_sec:
                         if "input_ids" in evt:
                             for tid in evt["input_ids"]:
@@ -340,7 +376,7 @@ class DuplexTransform:
                 # Case 1: 큐가 비었음 -> [Silence] (1개)
                 # Case 2: 큐에 1개 남음 -> [Token, Pad] (2개)
                 # Case 3: 큐에 2개 이상 -> [Token, Token] (2개)
-                
+
                 emit_tokens = []
                 emit_event_idxs = []
 
@@ -348,17 +384,17 @@ class DuplexTransform:
                     # 1. 큐가 비었음 -> 침묵 1개
                     emit_tokens.append(self.config.silence_token_id)
                     emit_event_idxs.append(None)
-                
+
                 elif len(token_queue) == 1:
                     # 2. 큐에 1개 남음 -> 텍스트 1개 + Pad 1개
                     tid, e_idx = token_queue.pop(0)
                     emit_tokens.append(tid)
                     emit_event_idxs.append(e_idx)
-                    
+
                     # Pad 추가
                     emit_tokens.append(self.pad_token_id)
                     emit_event_idxs.append(None)
-                    
+
                 else:
                     # 3. 큐에 2개 이상 -> 텍스트 2개
                     for _ in range(2):
@@ -368,7 +404,7 @@ class DuplexTransform:
 
                 start_pos = len(input_sequence)
                 input_sequence.extend(emit_tokens)
-                
+
                 for k, e_idx in enumerate(emit_event_idxs):
                     if e_idx is not None:
                         if e_idx not in event_token_map:
@@ -376,11 +412,13 @@ class DuplexTransform:
                         event_token_map[e_idx].append(start_pos + k)
 
                 if len(input_sequence) > self.config.max_token_length:
-                    print(f"[Warning] Truncating sequence at {len(input_sequence)} tokens.")
+                    print(
+                        f"[Warning] Truncating sequence at {len(input_sequence)} tokens."
+                    )
                     break
 
             target_audios_list: list[AudioSeg] = []
-            
+
             with sf.SoundFile(io.BytesIO(t_bytes_24k)) as f:
                 full_target_audio = f.read(dtype="float32")
                 if full_target_audio.ndim > 1:
@@ -390,29 +428,34 @@ class DuplexTransform:
                 evt = target_events[e_idx]
                 t_start_sample = int(evt["start"] * SAMPLE_RATE_TARGET)
                 t_end_sample = int(evt["end"] * SAMPLE_RATE_TARGET)
-                
-                if t_start_sample < 0: t_start_sample = 0
-                if t_end_sample > len(full_target_audio): t_end_sample = len(full_target_audio)
-                
+
+                if t_start_sample < 0:
+                    t_start_sample = 0
+                if t_end_sample > len(full_target_audio):
+                    t_end_sample = len(full_target_audio)
+
                 if t_end_sample > t_start_sample:
                     t_chunk = full_target_audio[t_start_sample:t_end_sample]
                 else:
                     t_chunk = np.zeros(16000, dtype=np.float32)
 
-                target_audios_list.append(AudioSeg(
-                    text_token_idxs=indices,
-                    audio=Audio(waveform=t_chunk, sampling_rate=SAMPLE_RATE_TARGET)
-                ))
+                target_audios_list.append(
+                    AudioSeg(
+                        text_token_idxs=indices,
+                        audio=Audio(waveform=t_chunk, sampling_rate=SAMPLE_RATE_TARGET),
+                    )
+                )
 
             row_obj = DatasetRow(
                 input_sequence=input_sequence,
                 target_audios=target_audios_list,
                 input_audios=input_audios_list,
-                speaker_embedding=speaker_embedding
+                speaker_embedding=speaker_embedding,
             )
             out_dataset_rows.append(row_obj)
-            
+
         return {"dataset_row_obj": out_dataset_rows}
+
 
 def duplex_data(
     data_dir: Optional[Path] = None,
@@ -426,14 +469,14 @@ def duplex_data(
     if not dataset_path.exists():
         if data_dir is not None and data_dir.exists():
             print(f">>> Creating dataset from raw data at {data_dir}...")
-            dataset = create_duplex_dataset(data_dir, model_path) 
+            dataset = create_duplex_dataset(data_dir, model_path)
             dataset.save_to_disk(str(dataset_path))
         else:
             print(
                 ">>> Raw data not provided. Fetching config from GitHub for Duplex..."
             )
-            #url_url = "https://raw.githubusercontent.com/riverfog7/sca_data_prep/refs/heads/main/.hf_dataset_url_duplex"
-            #hash_url = "https://raw.githubusercontent.com/riverfog7/sca_data_prep/refs/heads/main/.hf_dataset_md5_duplex"
+            # url_url = "https://raw.githubusercontent.com/riverfog7/sca_data_prep/refs/heads/main/.hf_dataset_url_duplex"
+            # hash_url = "https://raw.githubusercontent.com/riverfog7/sca_data_prep/refs/heads/main/.hf_dataset_md5_duplex"
 
             url_url = "https://raw.githubusercontent.com/wjm9765/sca_data_prep/refs/heads/main/.hf_dataset_url_duplex"
             hash_url = "https://raw.githubusercontent.com/wjm9765/sca_data_prep/refs/heads/main/.hf_dataset_md5_duplex"
@@ -495,10 +538,9 @@ def duplex_data(
     train_ds = dataset["train"]
 
     print(">>> Setting up DuplexTransform...")
-    
+
     config = DuplexConfig(model_path=model_path)
     train_ds.set_transform(DuplexTransform(dataset["storage"], config=config))
- 
 
     return train_ds
 
