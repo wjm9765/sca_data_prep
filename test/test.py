@@ -45,7 +45,7 @@ def verify_dataset():
     # 1. 데이터셋 로드 (dataset_utils.easy_load 사용)
     # -------------------------------------------------------------------------
     try:
-        ds = easy_load(DEFAULT_INPUT_DIR, format="duplex")
+        ds = easy_load(format="duplex")
 
         total_len = len(ds)
         if NUM_SAMPLES_TO_CHECK is not None and NUM_SAMPLES_TO_CHECK < total_len:
