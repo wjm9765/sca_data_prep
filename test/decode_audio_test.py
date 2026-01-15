@@ -1,11 +1,10 @@
 #!/usr/bin/env -S uv run python
 
-import sys
-import os
 import numpy as np
 import soundfile as sf
 from pathlib import Path
 from transformers import Qwen3OmniMoeProcessor
+from sca_data.dataset_utils import easy_load
 
 # -------------------------------------------------------------------------
 # [설정] 저장 경로 및 샘플 개수
@@ -17,16 +16,6 @@ NUM_SAMPLES_TO_SAVE = 5  # 몇 개의 샘플을 저장할지 설정
 # -------------------------------------------------------------------------
 # [Import] sca_data 패키지 로드
 # -------------------------------------------------------------------------
-try:
-    # 현재 위치가 패키지 루트라면 바로 import
-    from src.sca_data.dataset_utils import easy_load
-except ImportError:
-    # 아니라면 경로 추가 후 import
-    current_dir = os.getcwd()
-    src_path = os.path.join(current_dir, "src")
-    if src_path not in sys.path:
-        sys.path.append(src_path)
-    from sca_data.dataset_utils import easy_load
 
 
 def main():
@@ -44,7 +33,7 @@ def main():
         processor = Qwen3OmniMoeProcessor.from_pretrained(
             "Qwen/Qwen3-Omni-30B-A3B-Instruct", trust_remote_code=True
         )
-        tokenizer = processor.tokenizer
+        tokenizer = processor.tokenizer  # type:ignore
     except Exception as e:
         print(f"⚠️ 토크나이저 로드 실패: {e}")
         print("   -> 텍스트 디코딩 기능이 제한됩니다.")

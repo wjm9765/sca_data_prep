@@ -37,14 +37,14 @@ full = [
     "torchcodec>=0.8.1",
     "tqdm>=4.67.1",
     "yt-dlp>=2025.11.12",
+    "torchvision>=0.24.1",
     "transformers>=4.37.4",
-    "torchvision>=0.24.1"
 ]
 
-cpu = ["torch==2.9.1", "torchaudio==2.9.1"]
-cu126 = ["torch==2.9.1", "torchaudio==2.9.1"]
-cu128 = ["torch==2.9.1", "torchaudio==2.9.1"]
-cu130 = ["torch==2.9.1", "torchaudio==2.9.1"]
+cpu = ["torch==2.9.1", "torchaudio==2.9.1", "torchvision>=0.24.1"]
+cu126 = ["torch==2.9.1", "torchaudio==2.9.1", "torchvision>=0.24.1"]
+cu128 = ["torch==2.9.1", "torchaudio==2.9.1", "torchvision>=0.24.1"]
+cu130 = ["torch==2.9.1", "torchaudio==2.9.1", "torchvision>=0.24.1"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

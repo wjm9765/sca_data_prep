@@ -8,14 +8,7 @@ from tqdm import tqdm
 
 from transformers import Qwen3OmniMoeProcessor
 
-try:
-    # dataset_utils.py에서 함수 가져오기
-    from sca_data.dataset_utils import parse_aligned_script, duplex_data
-except ImportError as e:
-    print("[Error] Failed to import 'sca_data'.")
-    print(f"Debug info - sys.path: {sys.path}")
-    print(f"Error details: {e}")
-    sys.exit(1)
+from sca_data.dataset_utils import parse_aligned_script, duplex_data
 
 # -----------------------------------------------------------------------------
 # [Config] 기본 설정

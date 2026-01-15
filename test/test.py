@@ -5,18 +5,13 @@ from pathlib import Path
 from tqdm import tqdm
 import textwrap
 from transformers import Qwen3OmniMoeProcessor
+from sca_data.dataset_utils import easy_load
 
 # =============================================================================
 # [설정] 사용자 환경에 맞게 수정
 # =============================================================================
 DEFAULT_INPUT_DIR = Path("./Multi-stream Spontaneous Conversation Training Dataset")
 NUM_SAMPLES_TO_CHECK = None  # None = 전체 데이터 검증 (엄격 모드)
-
-# [Import] 원본 함수 호출 방식 유지
-try:
-    from src.sca_data.dataset_utils import easy_load
-except ImportError:
-    from sca_data.dataset_utils import easy_load
 
 
 def print_separator(title):
@@ -36,7 +31,7 @@ def verify_dataset():
         processor = Qwen3OmniMoeProcessor.from_pretrained(
             "Qwen/Qwen3-Omni-30B-A3B-Instruct", trust_remote_code=True
         )
-        tokenizer = processor.tokenizer
+        tokenizer = processor.tokenizer  # type: ignore
     except Exception as e:
         print(f"⚠️ 토크나이저 로드 실패: {e}")
         return
