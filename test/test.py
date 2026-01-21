@@ -204,30 +204,35 @@ def verify_dataset():
                 # (Step B) 텍스트/침묵 확인
                 if cursor >= len(body_seq):
                     break
-                
+
                 # Check next 'slice_len' tokens or until end or next audio token
                 # In strict structure, it must be either:
                 # 1. 1 Silence Token (if queue was empty)
                 # 2. 4 Text Tokens (text or pad, if queue was not empty)
-                
+
                 # How to distinguish?
                 # If it's Silence Token, it's length 1.
                 # If it's Text, it's length 4.
-                
+
                 # We can't know in advance how many tokens to read, so we scan until AUDIO_TOKEN or End.
                 # Look ahead for next AUDIO_TOKEN
                 next_audio_pos = cursor
-                while next_audio_pos < len(body_seq) and body_seq[next_audio_pos] != AUDIO_TOKEN:
+                while (
+                    next_audio_pos < len(body_seq)
+                    and body_seq[next_audio_pos] != AUDIO_TOKEN
+                ):
                     next_audio_pos += 1
-                
+
                 gap_len = next_audio_pos - cursor
-                
+
                 if gap_len == 1:
                     # 1개면 Silence 여야 함 (8:1 Case 1)
                     token = body_seq[cursor]
                     if token != SILENCE_TOKEN:
                         if stats["structure_pattern_error"] == 0:
-                            print(f"\n❌ [Sample {i}] 1개짜리 갭인데 Silence 토큰 아님: {token} (Expected {SILENCE_TOKEN})")
+                            print(
+                                f"\n❌ [Sample {i}] 1개짜리 갭인데 Silence 토큰 아님: {token} (Expected {SILENCE_TOKEN})"
+                            )
                         stats["structure_pattern_error"] += 1
                         break
                 elif gap_len == TEXT_SLICE:
@@ -236,10 +241,11 @@ def verify_dataset():
                 else:
                     # 1이나 4가 아니면 에러 (Strict Check)
                     if stats["structure_pattern_error"] == 0:
-                        print(f"\n❌ [Sample {i}] 텍스트/침묵 길이 이상: {gap_len} (Expected 1 or {TEXT_SLICE})")
+                        print(
+                            f"\n❌ [Sample {i}] 텍스트/침묵 길이 이상: {gap_len} (Expected 1 or {TEXT_SLICE})"
+                        )
                     stats["structure_pattern_error"] += 1
                     break
-
 
                 cursor += gap_len
 

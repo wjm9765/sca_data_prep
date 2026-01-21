@@ -373,11 +373,11 @@ class DuplexTransform:
                         next_event_idx += 1
                     else:
                         break
-                
+
                 # [Modified Logic to support 8:4 pattern and fill remainder]
                 emit_tokens = []
                 emit_event_idxs = []
-                
+
                 slice_len = self.config.text_token_slice_len
 
                 if not token_queue:
@@ -388,16 +388,18 @@ class DuplexTransform:
                 else:
                     # Case 2: Text exists -> Emit 'slice_len' tokens
                     # If remaining < slice_len, fill remainder with silence
-                    
+
                     # 1. Pop available tokens (max slice_len)
                     for _ in range(min(len(token_queue), slice_len)):
                         tid, e_idx = token_queue.pop(0)
                         emit_tokens.append(tid)
                         emit_event_idxs.append(e_idx)
-                    
+
                     # 2. Fill remainder with Silence Token (instead of Pad/EOS if distinct)
                     while len(emit_tokens) < slice_len:
-                        emit_tokens.append(self.pad_token_id) # pad_token_id == silence_token_id
+                        emit_tokens.append(
+                            self.pad_token_id
+                        )  # pad_token_id == silence_token_id
                         emit_event_idxs.append(None)
 
                 start_pos = len(input_sequence)
