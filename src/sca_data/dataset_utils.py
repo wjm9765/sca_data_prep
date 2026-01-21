@@ -42,8 +42,8 @@ SAMPLE_RATE_TARGET = 24000
 @dataclass
 class DuplexConfig:
     audio_placeholder_token: int = -100
-    audio_token_ratio: int = 4  # 오디오 청크 당 -100 개수 (4개)
-    text_token_slice_len: int = 2  # 청크당 가져올 텍스트 토큰 수
+    audio_token_ratio: int = 8  # [Modified] 오디오 청크 당 -100 개수
+    text_token_slice_len: int = 4  # [Modified] 청크당 가져올 텍스트 토큰 수
     silence_token_id: int = 151646  # 묵음 토큰 151646~151651
     max_token_length: int = 40000
     model_path: str = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
@@ -373,34 +373,32 @@ class DuplexTransform:
                         next_event_idx += 1
                     else:
                         break
-                # Case 1: 큐가 비었음 -> [Silence] (1개)
-                # Case 2: 큐에 1개 남음 -> [Token, Pad] (2개)
-                # Case 3: 큐에 2개 이상 -> [Token, Token] (2개)
-
+                
+                # [Modified Logic to support 8:4 pattern and fill remainder]
                 emit_tokens = []
                 emit_event_idxs = []
+                
+                slice_len = self.config.text_token_slice_len
 
                 if not token_queue:
-                    # 1. 큐가 비었음 -> 침묵 1개
+                    # Case 1: Silence (Queue Empty) -> Emit 1 Silence Token
+                    # (Core logic: if first token is special static -> 8:1 ratio)
                     emit_tokens.append(self.config.silence_token_id)
                     emit_event_idxs.append(None)
-
-                elif len(token_queue) == 1:
-                    # 2. 큐에 1개 남음 -> 텍스트 1개 + Pad 1개
-                    tid, e_idx = token_queue.pop(0)
-                    emit_tokens.append(tid)
-                    emit_event_idxs.append(e_idx)
-
-                    # Pad 추가
-                    emit_tokens.append(self.pad_token_id)
-                    emit_event_idxs.append(None)
-
                 else:
-                    # 3. 큐에 2개 이상 -> 텍스트 2개
-                    for _ in range(2):
+                    # Case 2: Text exists -> Emit 'slice_len' tokens
+                    # If remaining < slice_len, fill remainder with silence
+                    
+                    # 1. Pop available tokens (max slice_len)
+                    for _ in range(min(len(token_queue), slice_len)):
                         tid, e_idx = token_queue.pop(0)
                         emit_tokens.append(tid)
                         emit_event_idxs.append(e_idx)
+                    
+                    # 2. Fill remainder with Silence Token (instead of Pad/EOS if distinct)
+                    while len(emit_tokens) < slice_len:
+                        emit_tokens.append(self.pad_token_id) # pad_token_id == silence_token_id
+                        emit_event_idxs.append(None)
 
                 start_pos = len(input_sequence)
                 input_sequence.extend(emit_tokens)

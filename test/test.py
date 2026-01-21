@@ -74,8 +74,8 @@ def verify_dataset():
     # Config 상수 (dataset_utils 설정과 일치해야 함)
     AUDIO_TOKEN = -100
     SILENCE_TOKEN = 151646
-    AUDIO_RATIO = 4
-    TEXT_SLICE = 2
+    AUDIO_RATIO = 8
+    TEXT_SLICE = 4
 
     # 시스템 프롬프트 기준값 (첫 번째 샘플에서 추출)
     ref_sys_prompt_ids = None
@@ -125,16 +125,16 @@ def verify_dataset():
 
         # =====================================================================
         # [Check 3] 오디오 리스트 개수 vs 토큰 개수 매칭
-        # "list[audio]의 개수 4배가 -100개랑 같아야 함"
+        # "list[audio]의 개수 8배가 -100개랑 같아야 함"
         # =====================================================================
         num_input_audios = len(row.input_audios)
         num_audio_tokens = input_seq.count(AUDIO_TOKEN)
 
-        if num_input_audios * 4 != num_audio_tokens:
+        if num_input_audios * AUDIO_RATIO != num_audio_tokens:
             stats["audio_count_mismatch"] += 1
             if stats["audio_count_mismatch"] == 1:
                 print(
-                    f"\n❌ [Sample {i}] 오디오 불일치: 객체 {num_input_audios}개 * 4 != 토큰 {num_audio_tokens}개"
+                    f"\n❌ [Sample {i}] 오디오 불일치: 객체 {num_input_audios}개 * {AUDIO_RATIO} != 토큰 {num_audio_tokens}개"
                 )
 
         # =====================================================================
@@ -175,17 +175,17 @@ def verify_dataset():
                             f"\n❌ [Sample {i}] 시스템 프롬프트가 Sample 0과 다릅니다."
                         )
 
-            # 6-2. 본문 패턴 확인 (4 Audio -> 1 Silence or 2 Text)
+            # 6-2. 본문 패턴 확인 (8 Audio -> 1 Silence or 4 Text)
             body_seq = input_seq[first_audio_idx:]
             cursor = 0
 
             while cursor < len(body_seq):
-                # (Step A) 오디오 4개 확인
+                # (Step A) 오디오 8개 확인
                 audio_part = body_seq[cursor : cursor + AUDIO_RATIO]
 
                 # 마지막 자투리가 남을 수 있으므로 길이 체크
                 if len(audio_part) < AUDIO_RATIO:
-                    # 정확히 4개 단위로 안 끝나면 에러로 볼 것인지?
+                    # 정확히 8개 단위로 안 끝나면 에러로 볼 것인지?
                     # 보통 마지막엔 잘릴 수 있으니 패스, 하지만 -100이 섞여있으면 안됨.
                     if any(t != AUDIO_TOKEN for t in audio_part):
                         stats["structure_pattern_error"] += 1
@@ -195,7 +195,7 @@ def verify_dataset():
                     stats["structure_pattern_error"] += 1
                     if stats["structure_pattern_error"] == 1:
                         print(
-                            f"\n❌ [Sample {i}] 오디오 패턴 깨짐 (4연속 아님): {audio_part}"
+                            f"\n❌ [Sample {i}] 오디오 패턴 깨짐 ({AUDIO_RATIO}연속 아님): {audio_part}"
                         )
                     break
 
@@ -204,30 +204,48 @@ def verify_dataset():
                 # (Step B) 텍스트/침묵 확인
                 if cursor >= len(body_seq):
                     break
-                first_token = body_seq[cursor]
-
-                if first_token == SILENCE_TOKEN:
-                    # 침묵은 1개
-                    cursor += 1
-                else:
-                    # 텍스트는 2개 (오디오 토큰이 섞이면 안됨)
-                    text_part = body_seq[cursor : cursor + TEXT_SLICE]
-
-                    if len(text_part) < TEXT_SLICE:
-                        break  # 끝부분 도달
-
-                    if any(t == AUDIO_TOKEN for t in text_part):
+                
+                # Check next 'slice_len' tokens or until end or next audio token
+                # In strict structure, it must be either:
+                # 1. 1 Silence Token (if queue was empty)
+                # 2. 4 Text Tokens (text or pad, if queue was not empty)
+                
+                # How to distinguish?
+                # If it's Silence Token, it's length 1.
+                # If it's Text, it's length 4.
+                
+                # We can't know in advance how many tokens to read, so we scan until AUDIO_TOKEN or End.
+                # Look ahead for next AUDIO_TOKEN
+                next_audio_pos = cursor
+                while next_audio_pos < len(body_seq) and body_seq[next_audio_pos] != AUDIO_TOKEN:
+                    next_audio_pos += 1
+                
+                gap_len = next_audio_pos - cursor
+                
+                if gap_len == 1:
+                    # 1개면 Silence 여야 함 (8:1 Case 1)
+                    token = body_seq[cursor]
+                    if token != SILENCE_TOKEN:
+                        if stats["structure_pattern_error"] == 0:
+                            print(f"\n❌ [Sample {i}] 1개짜리 갭인데 Silence 토큰 아님: {token} (Expected {SILENCE_TOKEN})")
                         stats["structure_pattern_error"] += 1
-                        if stats["structure_pattern_error"] == 1:
-                            print(
-                                f"\n❌ [Sample {i}] 텍스트 위치에 오디오 토큰 발견: {text_part}"
-                            )
                         break
+                elif gap_len == TEXT_SLICE:
+                    # 4개면 OK (8:4 Case 2)
+                    pass
+                else:
+                    # 1이나 4가 아니면 에러 (Strict Check)
+                    if stats["structure_pattern_error"] == 0:
+                        print(f"\n❌ [Sample {i}] 텍스트/침묵 길이 이상: {gap_len} (Expected 1 or {TEXT_SLICE})")
+                    stats["structure_pattern_error"] += 1
+                    break
 
-                    cursor += TEXT_SLICE
+
+                cursor += gap_len
 
         except Exception as e:
-            print(f"⚠️ [Sample {i}] 패턴 검증 중 예외: {e}")
+            if stats["structure_pattern_error"] == 0:
+                print(f"\n❌ [Sample {i}] 검증 중 예외 발생: {e}")
             stats["structure_pattern_error"] += 1
 
     # ---------------------------------------------------------------------
